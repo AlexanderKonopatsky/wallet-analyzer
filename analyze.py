@@ -15,6 +15,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 MODEL = "google/gemini-3-pro-preview"  # easy to change
 DUST_THRESHOLD_USD = 1.0
 CHUNK_MAX_TRANSACTIONS = 30
+MAX_CONTEXT_CHRONOLOGIES = None  # None = все хронологии, или число (например, 5 = последние 5)
 DATA_DIR = Path("data")
 REPORTS_DIR = Path("reports")
 
@@ -30,17 +31,10 @@ SYSTEM_PROMPT = """\
 - Указывай суммы, токены, платформы и чейны.
 - Если несколько операций — логическая цепочка (например: занял → обменял → \
 погасил долг на другой платформе), объясняй общий смысл этой последовательности.
+- Учитывай контекст предыдущей активности (если он есть) для понимания общей стратегии.
 - После описания каждого дня ОБЯЗАТЕЛЬНО добавь строку \
 «**Суть дня:** ...» — одно предложение, резюмирующее главное действие/цель дня.
 - Не придумывай то, чего нет в данных.
-- Отвечай СТРОГО в формате двух секций:
-
-## Хронология
-(описание по дням)
-
-## Резюме
-(краткое резюме всей активности до текущего момента, не более 300 слов — \
-оно будет использовано как контекст для следующей порции транзакций)\
 """
 
 
@@ -256,26 +250,11 @@ def call_llm(system_prompt: str, user_prompt: str) -> str:
     return data["choices"][0]["message"]["content"]
 
 
-def parse_llm_response(text: str) -> tuple[str, str]:
-    """Split LLM response into (chronology, summary) sections."""
-    chronology = ""
-    summary = ""
-
-    # Try to find ## Хронология and ## Резюме sections
-    chron_match = re.search(
-        r"## Хронология\s*\n(.*?)(?=## Резюме|$)", text, re.DOTALL | re.IGNORECASE
-    )
-    summary_match = re.search(r"## Резюме\s*\n(.*)", text, re.DOTALL | re.IGNORECASE)
-
-    if chron_match:
-        chronology = chron_match.group(1).strip()
-    else:
-        chronology = text.strip()
-
-    if summary_match:
-        summary = summary_match.group(1).strip()
-
-    return chronology, summary
+def parse_llm_response(text: str) -> str:
+    """Extract chronology from LLM response."""
+    # Remove optional "## Хронология" header if present
+    text = re.sub(r"^##\s*Хронология\s*\n", "", text.strip(), flags=re.IGNORECASE)
+    return text.strip()
 
 
 # ── State management ───────────────────────────────────────────────────────
@@ -284,7 +263,7 @@ def load_state(wallet: str) -> dict:
     if state_path.exists():
         with open(state_path, "r", encoding="utf-8") as f:
             return json.load(f)
-    return {"chunk_index": 0, "rolling_summary": "", "chronology_parts": []}
+    return {"chunk_index": 0, "chronology_parts": []}
 
 
 def save_state(wallet: str, state: dict) -> None:
@@ -321,7 +300,6 @@ def analyze_wallet(wallet: str) -> None:
     # Load existing state (for resume)
     state = load_state(wallet)
     start_chunk = state["chunk_index"]
-    rolling_summary = state["rolling_summary"]
     chronology_parts = state["chronology_parts"]
 
     if start_chunk > 0:
@@ -342,9 +320,15 @@ def analyze_wallet(wallet: str) -> None:
 
         tx_text = "\n".join(formatted_lines)
 
-        # Build prompt
-        if rolling_summary:
-            context = f"## Контекст предыдущей активности:\n{rolling_summary}"
+        # Build context from previous chronologies
+        if chronology_parts:
+            # Apply MAX_CONTEXT_CHRONOLOGIES limit if set
+            if MAX_CONTEXT_CHRONOLOGIES is not None:
+                context_parts = chronology_parts[-MAX_CONTEXT_CHRONOLOGIES:]
+            else:
+                context_parts = chronology_parts
+
+            context = "## Контекст предыдущей активности:\n\n" + "\n\n".join(context_parts)
         else:
             context = "## Контекст предыдущей активности:\nЭто начало анализа, предыдущих данных нет."
 
@@ -353,7 +337,7 @@ def analyze_wallet(wallet: str) -> None:
 ## Транзакции для анализа:
 {tx_text}
 
-Опиши хронологию действий пользователя по дням и обнови резюме."""
+Опиши хронологию действий пользователя по дням."""
 
         # Call LLM
         try:
@@ -362,23 +346,19 @@ def analyze_wallet(wallet: str) -> None:
             print(f"  Ошибка API: {e}")
             save_state(wallet, {
                 "chunk_index": i,
-                "rolling_summary": rolling_summary,
                 "chronology_parts": chronology_parts,
             })
             print(f"  Состояние сохранено, можно продолжить позже.")
             return
 
-        chronology, summary = parse_llm_response(response)
+        chronology = parse_llm_response(response)
 
         if chronology:
             chronology_parts.append(chronology)
-        if summary:
-            rolling_summary = summary
 
         # Save state after each chunk
         save_state(wallet, {
             "chunk_index": i + 1,
-            "rolling_summary": rolling_summary,
             "chronology_parts": chronology_parts,
         })
         print(f"  Готово.")
