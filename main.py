@@ -10,8 +10,69 @@ from dotenv import load_dotenv
 load_dotenv()
 
 API_URL = "https://feed-api.cielo.finance/api/v1/feed"
-API_KEY = os.getenv("CIELO_API_KEY")
 DATA_DIR = Path("data")
+
+
+def _load_api_keys() -> list[str]:
+    """Load all CIELO_API_KEY variants from environment.
+
+    Reads CIELO_API_KEY, CIELO_API_KEY_1, CIELO_API_KEY_2, ... up to _99.
+    Returns list of valid (non-empty) keys.
+    """
+    keys = []
+    base = os.getenv("CIELO_API_KEY", "")
+    if base:
+        keys.append(base)
+    for i in range(1, 100):
+        k = os.getenv(f"CIELO_API_KEY_{i}", "")
+        if k:
+            keys.append(k)
+        elif i > 10:
+            # Stop scanning after a gap beyond index 10
+            break
+    return keys
+
+
+API_KEYS = _load_api_keys()
+_current_key_index = 0
+
+
+def _get_current_key() -> str:
+    """Return the current API key."""
+    global _current_key_index
+    if not API_KEYS:
+        return ""
+    return API_KEYS[_current_key_index % len(API_KEYS)]
+
+
+def _rotate_key() -> bool:
+    """Switch to the next API key. Returns False if all keys exhausted."""
+    global _current_key_index
+    if len(API_KEYS) <= 1:
+        return False
+    old_index = _current_key_index
+    _current_key_index = (_current_key_index + 1) % len(API_KEYS)
+    # Full circle — all keys exhausted
+    if _current_key_index == 0:
+        _current_key_index = old_index
+        return False
+    print(f"  → API key limit reached, switching to key #{_current_key_index + 1}/{len(API_KEYS)}")
+    return True
+
+
+def _api_request(params: dict) -> requests.Response:
+    """Make an API request with automatic key rotation on 429."""
+    while True:
+        response = requests.get(
+            API_URL,
+            headers={"X-API-KEY": _get_current_key()},
+            params=params,
+            timeout=15,
+        )
+        if response.status_code == 429:
+            if _rotate_key():
+                continue
+        return response
 
 
 def fetch_all_transactions(wallet: str, existing_txs: dict) -> list:
@@ -32,12 +93,7 @@ def fetch_all_transactions(wallet: str, existing_txs: dict) -> list:
         if start_from:
             params["startFrom"] = start_from
 
-        response = requests.get(
-            API_URL,
-            headers={"X-API-KEY": API_KEY},
-            params=params,
-            timeout=15,
-        )
+        response = _api_request(params)
         response.raise_for_status()
         result = response.json()
 
@@ -194,9 +250,10 @@ def display_transaction(i: int, tx: dict) -> None:
 
 
 def main() -> None:
-    if not API_KEY or API_KEY == "your_key_here":
+    if not API_KEYS:
         print("Error: specify CIELO_API_KEY in .env file")
         return
+    print(f"Loaded {len(API_KEYS)} API key(s)")
 
     wallet = input("Enter wallet address: ").strip()
     if not wallet:

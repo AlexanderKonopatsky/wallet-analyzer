@@ -1,0 +1,157 @@
+.report-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 60px 20px;
+  color: #8b949e;
+  font-size: 0.9rem;
+}
+
+.spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid #30363d;
+  border-top-color: #58a6ff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.report-empty {
+  text-align: center;
+  padding: 60px 20px;
+  color: #8b949e;
+  font-size: 0.9rem;
+}
+
+/* Meta bar */
+.report-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+  padding: 12px 16px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  font-size: 0.825rem;
+}
+
+.meta-tag {
+  display: inline-block;
+  padding: 3px 10px;
+  background: #1f6feb22;
+  border: 1px solid #1f6feb55;
+  border-radius: 16px;
+  color: #58a6ff;
+  font-weight: 600;
+  font-size: 0.825rem;
+}
+
+.meta-address {
+  font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+  color: #58a6ff;
+  font-size: 0.8rem;
+  word-break: break-all;
+}
+
+.meta-item {
+  color: #8b949e;
+}
+
+/* Summary block */
+.report-summary {
+  padding: 16px 20px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  color: #c9d1d9;
+  font-size: 0.9rem;
+  line-height: 1.7;
+}
+
+/* Day cards */
+.report-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.day-card {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.day-card-header {
+  padding: 10px 20px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: #e6edf3;
+  background: #1c2128;
+  border-bottom: 1px solid #30363d;
+  font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+}
+
+.day-card-body {
+  padding: 16px 20px;
+  font-size: 0.875rem;
+  line-height: 1.75;
+  color: #c9d1d9;
+}
+
+.day-card-body p {
+  margin-bottom: 8px;
+}
+
+.day-card-body p:last-child {
+  margin-bottom: 0;
+}
+
+.day-card-body ol,
+.day-card-body ul {
+  margin: 8px 0;
+  padding-left: 24px;
+}
+
+.day-card-body li {
+  margin-bottom: 4px;
+}
+
+.day-card-body strong {
+  color: #e6edf3;
+}
+
+.day-card-body code {
+  background: #0d1117;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.85em;
+  font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+}
+
+/* Day summary highlight */
+.day-summary {
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: #1f6feb14;
+  border-left: 3px solid #1f6feb;
+  border-radius: 0 6px 6px 0;
+  font-size: 0.85rem;
+  color: #a5d6ff;
+}
+
+.day-summary p {
+  margin: 0;
+}
+
+.day-summary strong {
+  color: #79c0ff;
+}
