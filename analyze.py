@@ -2,7 +2,7 @@ import json
 import os
 import re
 from collections import OrderedDict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -12,10 +12,11 @@ load_dotenv()
 
 # ── Configuration ──────────────────────────────────────────────────────────
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-MODEL = "google/gemini-3-pro-preview"  # easy to change
+MODEL = "google/gemini-3-flash-preview"  # easy to change
 DUST_THRESHOLD_USD = 1.0
 CHUNK_MAX_TRANSACTIONS = 30
-MAX_CONTEXT_CHRONOLOGIES = None  # None = все хронологии, или число (например, 5 = последние 5)
+MAX_CONTEXT_SUMMARIES = None  # None = все "Суть дня", или число для ограничения на больших кошельках
+FULL_CHRONOLOGY_COUNT = int(os.getenv("FULL_CHRONOLOGY_COUNT", 1))
 DATA_DIR = Path("data")
 REPORTS_DIR = Path("reports")
 
@@ -33,7 +34,8 @@ SYSTEM_PROMPT = """\
 погасил долг на другой платформе), объясняй общий смысл этой последовательности.
 - Учитывай контекст предыдущей активности (если он есть) для понимания общей стратегии.
 - После описания каждого дня ОБЯЗАТЕЛЬНО добавь строку \
-«**Суть дня:** ...» — одно предложение, резюмирующее главное действие/цель дня.
+«**Суть дня:** ...» — одно предложение, резюмирующее главное действие/цель дня. \
+Обязательно указывай ключевые суммы в долларах.
 - Не придумывай то, чего нет в данных.
 """
 
@@ -59,6 +61,97 @@ def fmt_ts(ts: int) -> str:
 
 def ts_to_date(ts: int) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+def parse_date(date_str: str) -> datetime | None:
+    """Parse a date string in YYYY-MM-DD format."""
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def filter_by_period(txs: list, date_from: datetime | None, date_to: datetime | None) -> list:
+    """Filter transactions by date range (inclusive)."""
+    filtered = []
+    for tx in txs:
+        ts = tx.get("timestamp", 0)
+        tx_dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+        if date_from and tx_dt < date_from:
+            continue
+        if date_to and tx_dt >= date_to.replace(hour=23, minute=59, second=59):
+            continue
+        filtered.append(tx)
+    return filtered
+
+
+def prompt_period(txs: list) -> tuple[datetime | None, datetime | None]:
+    """Ask the user to select an analysis period. Returns (date_from, date_to) or (None, None) for all."""
+    timestamps = [tx.get("timestamp", 0) for tx in txs if tx.get("timestamp")]
+    if not timestamps:
+        return None, None
+
+    min_date = ts_to_date(min(timestamps))
+    max_date = ts_to_date(max(timestamps))
+
+    print(f"\nДоступный период транзакций: {min_date} — {max_date}")
+    print("Выберите период анализа:")
+    print("  1) Весь период")
+    print("  2) Последние 7 дней")
+    print("  3) Последние 30 дней")
+    print("  4) Указать вручную")
+
+    choice = input("Ваш выбор (1-4) [1]: ").strip() or "1"
+
+    if choice == "1":
+        return None, None
+
+    if choice == "2":
+        date_to = datetime.fromtimestamp(max(timestamps), tz=timezone.utc)
+        date_from = date_to - timedelta(days=7)
+        print(f"Период: {date_from.strftime('%Y-%m-%d')} — {date_to.strftime('%Y-%m-%d')}")
+        return date_from, date_to
+
+    if choice == "3":
+        date_to = datetime.fromtimestamp(max(timestamps), tz=timezone.utc)
+        date_from = date_to - timedelta(days=30)
+        print(f"Период: {date_from.strftime('%Y-%m-%d')} — {date_to.strftime('%Y-%m-%d')}")
+        return date_from, date_to
+
+    if choice == "4":
+        date_from_str = input(f"Дата начала (YYYY-MM-DD) [{min_date}]: ").strip() or min_date
+        date_to_str = input(f"Дата конца (YYYY-MM-DD) [{max_date}]: ").strip() or max_date
+
+        date_from = parse_date(date_from_str)
+        date_to = parse_date(date_to_str)
+
+        if date_from is None:
+            print(f"Неверный формат даты начала: {date_from_str}, используется {min_date}")
+            date_from = parse_date(min_date)
+        if date_to is None:
+            print(f"Неверный формат даты конца: {date_to_str}, используется {max_date}")
+            date_to = parse_date(max_date)
+
+        print(f"Период: {date_from.strftime('%Y-%m-%d')} — {date_to.strftime('%Y-%m-%d')}")
+        return date_from, date_to
+
+    return None, None
+
+
+def get_tx_key(tx: dict) -> str:
+    """Get a unique key for a transaction (for incremental processing)."""
+    for field in ("id", "tx_hash", "hash", "transaction_hash"):
+        if tx.get(field):
+            return str(tx[field])
+    # Fallback: composite key from core fields
+    parts = [
+        str(tx.get("timestamp", "")),
+        tx.get("chain", ""),
+        tx.get("tx_type", ""),
+        str(tx.get("token0_amount", tx.get("amount", ""))),
+        tx.get("token0_symbol", tx.get("symbol", "")),
+    ]
+    return "|".join(parts)
 
 
 # ── Load & filter ──────────────────────────────────────────────────────────
@@ -257,13 +350,37 @@ def parse_llm_response(text: str) -> str:
     return text.strip()
 
 
+def extract_day_summaries(chronology: str) -> list:
+    """Extract 'date: Суть дня' pairs from chronology text."""
+    summaries = []
+    current_date = None
+    for line in chronology.split("\n"):
+        date_match = re.match(r"^###\s+(\d{4}-\d{2}-\d{2})", line)
+        if date_match:
+            current_date = date_match.group(1)
+        summary_match = re.match(r"\*\*Суть дня:\*\*\s*(.+)", line)
+        if summary_match and current_date:
+            summaries.append(f"{current_date}: {summary_match.group(1)}")
+            current_date = None
+    return summaries
+
+
 # ── State management ───────────────────────────────────────────────────────
 def load_state(wallet: str) -> dict:
     state_path = REPORTS_DIR / f"{wallet.lower()}_state.json"
     if state_path.exists():
         with open(state_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {"chunk_index": 0, "chronology_parts": []}
+            state = json.load(f)
+        # Migration from old format (no tx key tracking)
+        state.setdefault("processed_tx_keys", [])
+        state.setdefault("pending_tx_keys", [])
+        return state
+    return {
+        "chunk_index": 0,
+        "chronology_parts": [],
+        "processed_tx_keys": [],
+        "pending_tx_keys": [],
+    }
 
 
 def save_state(wallet: str, state: dict) -> None:
@@ -284,7 +401,7 @@ def save_report(wallet: str, chronology_parts: list) -> str:
 
 # ── Main pipeline ──────────────────────────────────────────────────────────
 def analyze_wallet(wallet: str) -> None:
-    # Load
+    # Load all transactions
     raw_txs = load_transactions(wallet)
     if not raw_txs:
         return
@@ -292,24 +409,67 @@ def analyze_wallet(wallet: str) -> None:
     txs = filter_transactions(raw_txs)
     print(f"Найдено {len(raw_txs)} транзакций, после фильтрации: {len(txs)}")
 
-    day_groups = group_by_days(txs)
+    # Ask user to select analysis period
+    date_from, date_to = prompt_period(txs)
+    if date_from or date_to:
+        txs = filter_by_period(txs, date_from, date_to)
+        print(f"После фильтрации по периоду: {len(txs)} транзакций")
+        if not txs:
+            print("Нет транзакций за выбранный период.")
+            return
+
+    # Load existing state
+    state = load_state(wallet)
+    chronology_parts = state["chronology_parts"]
+    processed_keys = set(state["processed_tx_keys"])
+    pending_keys = set(state.get("pending_tx_keys", []))
+    start_chunk = state["chunk_index"]
+
+    # Determine which transactions need processing
+    resuming = bool(pending_keys and start_chunk > 0)
+
+    if resuming:
+        # Resume interrupted batch: re-select the same transactions
+        new_txs = [tx for tx in txs if get_tx_key(tx) in pending_keys]
+        print(f"Продолжаем прерванный анализ: {len(new_txs)} транзакций")
+    else:
+        # Find genuinely new transactions
+        new_txs = [tx for tx in txs if get_tx_key(tx) not in processed_keys]
+        start_chunk = 0
+
+        if not new_txs:
+            # Migration: old state had no processed_tx_keys tracking
+            if not processed_keys and chronology_parts:
+                all_keys = [get_tx_key(tx) for tx in txs]
+                save_state(wallet, {
+                    "chunk_index": 0,
+                    "chronology_parts": chronology_parts,
+                    "processed_tx_keys": all_keys,
+                    "pending_tx_keys": [],
+                })
+                print("Состояние мигрировано на новый формат. Новых транзакций не найдено.")
+            else:
+                print("Новых транзакций не найдено.")
+            return
+
+        print(f"Найдено {len(new_txs)} новых транзакций для анализа")
+
+    # Track keys of current batch (for resume capability)
+    batch_keys = [get_tx_key(tx) for tx in new_txs]
+
+    day_groups = group_by_days(new_txs)
     chunks = make_chunks(day_groups)
     total_chunks = len(chunks)
     print(f"Сформировано {total_chunks} чанков для анализа\n")
 
-    # Load existing state (for resume)
-    state = load_state(wallet)
-    start_chunk = state["chunk_index"]
-    chronology_parts = state["chronology_parts"]
-
-    if start_chunk > 0:
-        print(f"Продолжаем с чанка {start_chunk + 1}/{total_chunks} (найдено сохранённое состояние)\n")
+    if resuming:
+        print(f"Продолжаем с чанка {start_chunk + 1}/{total_chunks}\n")
 
     for i in range(start_chunk, total_chunks):
         chunk = chunks[i]
         days_list = list(chunk.keys())
         days_range = f"{days_list[0]} — {days_list[-1]}" if len(days_list) > 1 else days_list[0]
-        tx_count = sum(len(txs) for txs in chunk.values())
+        tx_count = sum(len(dtxs) for dtxs in chunk.values())
         print(f"Обработка чанка {i + 1}/{total_chunks} (дни: {days_range}, транзакций: {tx_count})...")
 
         # Format transactions for this chunk
@@ -320,15 +480,41 @@ def analyze_wallet(wallet: str) -> None:
 
         tx_text = "\n".join(formatted_lines)
 
-        # Build context from previous chronologies
+        # Build context: compact "Суть дня" summaries + last N full chronologies
         if chronology_parts:
-            # Apply MAX_CONTEXT_CHRONOLOGIES limit if set
-            if MAX_CONTEXT_CHRONOLOGIES is not None:
-                context_parts = chronology_parts[-MAX_CONTEXT_CHRONOLOGIES:]
-            else:
-                context_parts = chronology_parts
+            context_sections = []
 
-            context = "## Контекст предыдущей активности:\n\n" + "\n\n".join(context_parts)
+            # Split into old (summaries only) and recent (full text)
+            if len(chronology_parts) > FULL_CHRONOLOGY_COUNT:
+                old_parts = chronology_parts[:-FULL_CHRONOLOGY_COUNT]
+                recent_parts = chronology_parts[-FULL_CHRONOLOGY_COUNT:]
+            else:
+                old_parts = []
+                recent_parts = chronology_parts
+
+            # Extract day summaries from older chronologies
+            if old_parts:
+                all_summaries = []
+                for part in old_parts:
+                    all_summaries.extend(extract_day_summaries(part))
+
+                if MAX_CONTEXT_SUMMARIES is not None:
+                    all_summaries = all_summaries[-MAX_CONTEXT_SUMMARIES:]
+
+                if all_summaries:
+                    context_sections.append(
+                        "## Краткий контекст предыдущей активности:\n"
+                        + "\n".join(f"- {s}" for s in all_summaries)
+                    )
+
+            # Add full recent chronologies
+            if recent_parts:
+                context_sections.append(
+                    "## Подробная хронология последних дней:\n\n"
+                    + "\n\n".join(recent_parts)
+                )
+
+            context = "\n\n".join(context_sections)
         else:
             context = "## Контекст предыдущей активности:\nЭто начало анализа, предыдущих данных нет."
 
@@ -347,6 +533,8 @@ def analyze_wallet(wallet: str) -> None:
             save_state(wallet, {
                 "chunk_index": i,
                 "chronology_parts": chronology_parts,
+                "processed_tx_keys": list(processed_keys),
+                "pending_tx_keys": batch_keys,
             })
             print(f"  Состояние сохранено, можно продолжить позже.")
             return
@@ -360,10 +548,20 @@ def analyze_wallet(wallet: str) -> None:
         save_state(wallet, {
             "chunk_index": i + 1,
             "chronology_parts": chronology_parts,
+            "processed_tx_keys": list(processed_keys),
+            "pending_tx_keys": batch_keys,
         })
         print(f"  Готово.")
 
-    # Save final report
+    # Batch complete: move pending keys to processed
+    processed_keys.update(batch_keys)
+    save_state(wallet, {
+        "chunk_index": 0,
+        "chronology_parts": chronology_parts,
+        "processed_tx_keys": list(processed_keys),
+        "pending_tx_keys": [],
+    })
+
     report_path = save_report(wallet, chronology_parts)
     print(f"\nАнализ завершён! Результат: {report_path}")
 

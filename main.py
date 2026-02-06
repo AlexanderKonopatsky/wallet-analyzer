@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,6 +22,11 @@ def fetch_all_transactions(wallet: str, existing_txs: dict) -> list:
     new_count = 0
 
     while True:
+        # Rate limiting: 10 credits/sec, 3 credits per request = max ~3 req/sec
+        # Add delay after first request to stay within limits
+        if page > 1:
+            time.sleep(0.4)  # ~2.5 requests/sec to be safe
+
         print(f"Requesting page {page}...")
         params = {"wallet": wallet, "limit": 100}
         if start_from:
@@ -44,6 +50,8 @@ def fetch_all_transactions(wallet: str, existing_txs: dict) -> list:
             return []
 
         items = result.get("data", {}).get("items", [])
+        print(f"  → Received {len(items)} items from API")
+        print(f"  → Current existing_txs count: {len(existing_txs)}")
 
         # Add new transactions
         page_new_count = 0
