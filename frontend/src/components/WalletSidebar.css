@@ -233,3 +233,259 @@
   color: #484f58;
   font-size: 0.825rem;
 }
+
+/* Category add button */
+.category-add-btn {
+  margin-top: 10px;
+  width: 100%;
+  padding: 8px 12px;
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  color: #8b949e;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.category-add-btn:hover {
+  background: #30363d;
+  color: #e6edf3;
+}
+
+/* Category section */
+.category-section {
+  margin-bottom: 12px;
+}
+
+.category-header {
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: background 0.15s;
+  user-select: none;
+}
+
+.category-header:hover {
+  background: rgba(48, 54, 61, 0.3);
+}
+
+.category-header-uncategorized {
+  cursor: default;
+}
+
+.category-header-uncategorized:hover {
+  background: transparent;
+}
+
+.category-header-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.category-color {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.category-icon {
+  font-size: 0.65rem;
+  color: #8b949e;
+  width: 12px;
+  text-align: center;
+}
+
+.category-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #e6edf3;
+  flex: 1;
+}
+
+.category-count {
+  font-size: 0.75rem;
+  color: #484f58;
+}
+
+.category-wallets {
+  padding-top: 4px;
+}
+
+/* Wallet category indicator */
+.wallet-card {
+  position: relative;
+}
+
+.wallet-card-category-indicator {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 8px 0 0 8px;
+}
+
+.wallet-card.active .wallet-card-category-indicator {
+  opacity: 0.5;
+}
+
+/* Modal */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-content {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 24px;
+  min-width: 320px;
+  max-width: 500px;
+}
+
+.modal-content h3 {
+  margin: 0 0 20px;
+  color: #e6edf3;
+  font-size: 1.1rem;
+}
+
+.modal-field {
+  margin-bottom: 16px;
+}
+
+.modal-field label {
+  display: block;
+  margin-bottom: 6px;
+  color: #8b949e;
+  font-size: 0.85rem;
+}
+
+.modal-field input[type="text"] {
+  width: 100%;
+  padding: 8px 10px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  color: #e6edf3;
+  font-size: 0.9rem;
+  box-sizing: border-box;
+}
+
+.modal-field input[type="text"]:focus {
+  border-color: #58a6ff;
+  outline: none;
+}
+
+.modal-field input[type="color"] {
+  width: 100%;
+  height: 40px;
+  padding: 4px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+
+.modal-actions button {
+  padding: 8px 16px;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.modal-actions button:first-child {
+  background: #238636;
+  color: #fff;
+  border-color: #238636;
+}
+
+.modal-actions button:first-child:hover:not(:disabled) {
+  background: #2ea043;
+  border-color: #2ea043;
+}
+
+.modal-actions button:first-child:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.modal-actions button:last-child {
+  background: #21262d;
+  color: #e6edf3;
+}
+
+.modal-actions button:last-child:hover {
+  background: #30363d;
+}
+
+/* Context Menu */
+.context-menu {
+  position: fixed;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 180px;
+  z-index: 2000;
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
+}
+
+.context-menu-header {
+  padding: 6px 12px;
+  font-size: 0.75rem;
+  color: #484f58;
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.context-menu-item {
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  color: #e6edf3;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: background 0.15s;
+}
+
+.context-menu-item:hover {
+  background: #21262d;
+}
+
+.category-color-small {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+/* Drag and drop */
+.wallet-card[draggable="true"] {
+  cursor: move;
+}
+
+.wallet-card:active {
+  opacity: 0.6;
+}

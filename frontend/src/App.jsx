@@ -52,6 +52,15 @@ function App() {
   const currentWallet = wallets.find(w => w.address.toLowerCase() === selectedWallet)
   const currentTag = currentWallet?.tag || ''
 
+  const refreshWallets = useCallback(async () => {
+    try {
+      const walletsRes = await fetch('/api/wallets')
+      setWallets(await walletsRes.json())
+    } catch (err) {
+      console.error('Failed to refresh wallets:', err)
+    }
+  }, [])
+
   const saveTag = useCallback(async (wallet, tag) => {
     try {
       await fetch(`/api/tags/${wallet}`, {
@@ -226,6 +235,7 @@ function App() {
           selectedWallet={selectedWallet}
           onSelect={handleSelect}
           onSaveTag={saveTag}
+          onRefresh={refreshWallets}
           onAction={(wallet, actionId) => {
             if (actionId === 'profile') {
               loadProfile(wallet)

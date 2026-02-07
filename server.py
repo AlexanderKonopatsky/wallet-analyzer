@@ -34,6 +34,16 @@ from analyze import (
     SYSTEM_PROMPT,
     FULL_CHRONOLOGY_COUNT,
 )
+from categories import (
+    get_all_categories,
+    get_category_by_id,
+    create_category,
+    update_category,
+    delete_category,
+    get_wallet_category,
+    set_wallet_category,
+    get_category_stats,
+)
 
 CHAIN_EXPLORERS = {
     "ethereum": "https://etherscan.io/tx/",
@@ -303,7 +313,7 @@ def list_wallets():
     wallets = []
     if DATA_DIR.exists():
         for filepath in sorted(DATA_DIR.glob("*.json")):
-            if filepath.name == "wallet_tags.json":
+            if filepath.name in ("wallet_tags.json", "categories.json", "refresh_status.json"):
                 continue
             address = filepath.stem
             meta = get_wallet_meta(address)
@@ -311,6 +321,15 @@ def list_wallets():
                 report_path = REPORTS_DIR / f"{address}.md"
                 meta["has_report"] = report_path.exists()
                 meta["tag"] = tags.get(address.lower(), "")
+
+                # Add category info
+                category_id = get_wallet_category(address.lower())
+                if category_id:
+                    category = get_category_by_id(category_id)
+                    meta["category"] = category
+                else:
+                    meta["category"] = None
+
                 wallets.append(meta)
     return wallets
 
@@ -334,6 +353,94 @@ async def set_tag(wallet: str, request: Request):
         tags.pop(wallet_lower, None)
     save_wallet_tags(tags)
     return {"address": wallet_lower, "tag": tag}
+
+
+# ── Categories API ────────────────────────────────────────────────────────────
+
+
+@app.get("/api/categories")
+def list_categories():
+    """Get all categories with wallet counts."""
+    categories = get_all_categories()
+    stats = get_category_stats()
+
+    # Add wallet count to each category
+    for category in categories:
+        category["wallet_count"] = stats.get(category["id"], 0)
+
+    return {
+        "categories": categories,
+        "uncategorized_count": stats.get("uncategorized", 0)
+    }
+
+
+@app.post("/api/categories")
+async def create_new_category(request: Request):
+    """Create a new category."""
+    body = await request.json()
+    name = body.get("name", "").strip()
+    color = body.get("color", "#3b82f6")
+
+    if not name:
+        raise HTTPException(status_code=400, detail="Category name is required")
+
+    category = create_category(name, color)
+    return category
+
+
+@app.put("/api/categories/{category_id}")
+async def update_existing_category(category_id: str, request: Request):
+    """Update category (name, color, or expanded state)."""
+    body = await request.json()
+    name = body.get("name")
+    color = body.get("color")
+    expanded = body.get("expanded")
+
+    category = update_category(category_id, name=name, color=color, expanded=expanded)
+
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found")
+
+    return category
+
+
+@app.delete("/api/categories/{category_id}")
+def remove_category(category_id: str):
+    """Delete a category. Wallets in this category will become uncategorized."""
+    success = delete_category(category_id)
+
+    if not success:
+        raise HTTPException(status_code=404, detail="Category not found")
+
+    return {"status": "deleted", "category_id": category_id}
+
+
+@app.put("/api/wallets/{wallet}/category")
+async def assign_wallet_category(wallet: str, request: Request):
+    """Assign wallet to a category or remove from category (set to null)."""
+    wallet_lower = wallet.lower()
+    body = await request.json()
+    category_id = body.get("category_id")  # Can be null to uncategorize
+
+    success = set_wallet_category(wallet_lower, category_id)
+
+    if not success:
+        raise HTTPException(status_code=404, detail="Category not found")
+
+    return {"wallet": wallet_lower, "category_id": category_id}
+
+
+@app.get("/api/wallets/{wallet}/category")
+def get_wallet_category_info(wallet: str):
+    """Get category info for a specific wallet."""
+    wallet_lower = wallet.lower()
+    category_id = get_wallet_category(wallet_lower)
+
+    if category_id:
+        category = get_category_by_id(category_id)
+        return {"wallet": wallet_lower, "category": category}
+
+    return {"wallet": wallet_lower, "category": None}
 
 
 @app.get("/api/report/{wallet}")
