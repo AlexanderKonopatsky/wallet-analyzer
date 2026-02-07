@@ -9,10 +9,13 @@ function countSections(markdown) {
   return (markdown.match(/^### /gm) || []).length
 }
 
-function RelatedCard({ rw, mainWallet }) {
+function RelatedCard({ rw, mainWallet, classificationOverride, classifyingNow }) {
   const [expandedDir, setExpandedDir] = useState(null) // 'sent' | 'received' | null
   const [txs, setTxs] = useState(null)
   const [txLoading, setTxLoading] = useState(false)
+
+  // Use override from parent (auto-classify queue) or server-cached data
+  const classification = classificationOverride || rw.classification || null
 
   const toggleTxs = async (direction) => {
     if (expandedDir === direction) {
@@ -44,10 +47,25 @@ function RelatedCard({ rw, mainWallet }) {
         <span className="related-card-address">
           {rw.address.slice(0, 10)}...{rw.address.slice(-6)}
         </span>
-        <span className="related-card-total">
-          {rw.total_transfers} transfers
-        </span>
+        <div className="related-card-top-right">
+          <span className="related-card-total">
+            {rw.total_transfers} transfers
+          </span>
+          {classifyingNow && (
+            <span className="classification-badge classification-loading">...</span>
+          )}
+        </div>
       </div>
+
+      {classification && (
+        <div className="related-classification">
+          <span className={`classification-badge classification-${classification.label}`}>
+            {classification.label}
+          </span>
+          {classification.name && <span className="classification-name">{classification.name}</span>}
+        </div>
+      )}
+
       <div className="related-card-stats">
         <div className="related-stat">
           <span className="related-stat-label">Sent</span>
@@ -114,6 +132,53 @@ function App() {
   const [relatedData, setRelatedData] = useState(null)
   const [relatedLoading, setRelatedLoading] = useState(false)
   const [relatedWallet, setRelatedWallet] = useState('')
+  const [showExcluded, setShowExcluded] = useState(false)
+
+  // Auto-classification queue for related wallets
+  const [classResults, setClassResults] = useState({}) // address → classification
+  const [classifyingAddr, setClassifyingAddr] = useState(null) // currently classifying
+
+  // Sequential auto-classify: when relatedData loads, classify unclassified wallets one by one
+  useEffect(() => {
+    if (!relatedData?.related_wallets) return
+
+    let cancelled = false
+    const classify = async () => {
+      for (const rw of relatedData.related_wallets) {
+        if (cancelled) break
+        // Skip if already classified (from server cache or previous run)
+        if (rw.classification || classResults[rw.address]) continue
+
+        setClassifyingAddr(rw.address)
+        try {
+          const res = await fetch(`/api/classify-wallet/${rw.address}`, { method: 'POST' })
+          if (cancelled) break
+          if (res.ok) {
+            const data = await res.json()
+            setClassResults(prev => ({ ...prev, [rw.address]: data }))
+            // If excluded, refresh the list to move it to excluded section
+            if (data.is_excluded) {
+              setClassifyingAddr(null)
+              // Small delay then refresh
+              await new Promise(r => setTimeout(r, 300))
+              if (!cancelled) {
+                const refreshRes = await fetch(`/api/related-wallets/${relatedWallet.toLowerCase()}`)
+                if (refreshRes.ok && !cancelled) {
+                  const refreshed = await refreshRes.json()
+                  setRelatedData(refreshed)
+                }
+              }
+              return // restart the loop with refreshed data
+            }
+          }
+        } catch { /* ignore */ }
+      }
+      if (!cancelled) setClassifyingAddr(null)
+    }
+
+    classify()
+    return () => { cancelled = true }
+  }, [relatedData]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Track which sections are NEW (by original index in markdown)
   const [oldSectionCount, setOldSectionCount] = useState(null)
@@ -318,7 +383,19 @@ function App() {
   const closeRelatedModal = () => {
     setRelatedData(null)
     setRelatedWallet('')
+    setShowExcluded(false)
+    setClassResults({})
+    setClassifyingAddr(null)
   }
+
+  const handleRestoreWallet = useCallback(async (address) => {
+    try {
+      const res = await fetch(`/api/excluded-wallets/${address}`, { method: 'DELETE' })
+      if (res.ok && relatedWallet) {
+        fetchRelatedWallets(relatedWallet)
+      }
+    } catch { /* ignore */ }
+  }, [relatedWallet, fetchRelatedWallets])
 
   // Monitor refresh status (polling)
   const startMonitoring = useCallback((wallet) => {
@@ -564,9 +641,21 @@ function App() {
                   <span className="related-summary-hint">
                     (bidirectional transfers: sent + received)
                   </span>
+                  {classifyingAddr && (
+                    <span className="related-classifying-hint">Classifying wallets...</span>
+                  )}
                 </div>
 
-                {relatedData.related_count === 0 && (
+                {relatedData.excluded_count > 0 && (
+                  <div className="related-excluded-bar">
+                    <span>{relatedData.excluded_count} wallet{relatedData.excluded_count > 1 ? 's' : ''} excluded</span>
+                    <button onClick={() => setShowExcluded(v => !v)}>
+                      {showExcluded ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
+                )}
+
+                {relatedData.related_count === 0 && !relatedData.excluded_count && (
                   <div className="related-empty">
                     No wallets with bidirectional transfers found.
                   </div>
@@ -574,9 +663,44 @@ function App() {
 
                 <div className="related-list">
                   {relatedData.related_wallets.map(rw => (
-                    <RelatedCard key={rw.address} rw={rw} mainWallet={relatedWallet} />
+                    <RelatedCard
+                      key={rw.address}
+                      rw={rw}
+                      mainWallet={relatedWallet}
+                      classificationOverride={classResults[rw.address]}
+                      classifyingNow={classifyingAddr === rw.address}
+                    />
                   ))}
                 </div>
+
+                {showExcluded && relatedData.excluded_wallets?.length > 0 && (
+                  <div className="related-excluded-section">
+                    <div className="related-excluded-header">Excluded Wallets</div>
+                    {relatedData.excluded_wallets.map(rw => (
+                      <div key={rw.address} className="related-card related-card-excluded">
+                        <div className="related-card-top">
+                          <span className="related-card-address">
+                            {rw.address.slice(0, 10)}...{rw.address.slice(-6)}
+                          </span>
+                          <div className="related-card-top-right">
+                            <span className={`classification-badge classification-${rw.exclusion?.label}`}>
+                              {rw.exclusion?.label}
+                            </span>
+                            {rw.exclusion?.name && (
+                              <span className="classification-name">{rw.exclusion.name}</span>
+                            )}
+                            <button
+                              className="related-restore-btn"
+                              onClick={() => handleRestoreWallet(rw.address)}
+                            >
+                              Restore
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </>
             )}
           </div>

@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import re
 import sys
 import threading
 from datetime import datetime, timezone
@@ -81,6 +82,7 @@ DATA_DIR = Path("data")
 REPORTS_DIR = Path("reports")
 TAGS_FILE = DATA_DIR / "wallet_tags.json"
 REFRESH_STATUS_FILE = DATA_DIR / "refresh_status.json"
+EXCLUDED_WALLETS_FILE = DATA_DIR / "excluded_wallets.json"
 
 # Profile generation settings
 PROFILE_MODEL = "google/gemini-3-flash-preview"
@@ -90,6 +92,27 @@ PROFILE_SYSTEM_PROMPT = """Ты — опытный ончейн-аналитик
 Прочитай отчёт целиком и составь глубокий профиль владельца. Не следуй шаблону — каждый кошелёк уникален, и профиль должен отражать именно то, что делает этого владельца особенным. Пиши о том, что действительно бросается в глаза и заслуживает внимания.
 
 Не пересказывай транзакции. Анализируй поведение, читай между строк, делай выводы. Ссылайся на конкретные события из отчёта как доказательства. Пиши на русском, используй markdown."""
+
+# Wallet classification settings
+CLASSIFY_MODEL = "google/gemini-3-flash-preview"
+CLASSIFY_SYSTEM_PROMPT = """You are a blockchain address classifier. Given an Ethereum-compatible wallet address and some context about its transaction behavior, determine if this address belongs to a known protocol, bridge, exchange, contract, DEX router, MEV bot, or dust spammer — i.e., NOT a personal wallet.
+
+Use the web search results to identify the address. Check if it matches any known protocol, bridge, exchange, or smart contract.
+
+Respond ONLY with a JSON object (no markdown fencing, no extra text):
+{
+  "is_excluded": true or false,
+  "label": "bridge" | "exchange" | "contract" | "dex_router" | "mev_bot" | "dust_spammer" | "personal" | "unknown",
+  "name": "Human-readable name if known (e.g. 'Across Protocol', 'Binance Hot Wallet'), otherwise empty string",
+  "confidence": "high" | "medium" | "low",
+  "reasoning": "Brief explanation of why you classified it this way"
+}
+
+Rules:
+- Only set is_excluded to true if confidence is medium or high
+- If unsure, set is_excluded to false and label to "unknown"
+- "personal" means it appears to be a regular user wallet
+- Consider transaction patterns: bridges often handle many different tokens, exchanges have very high volume, contracts have programmatic behavior"""
 
 # Background task status tracking: {wallet: {status, detail, thread_id}}
 refresh_tasks: dict[str, dict] = {}
@@ -128,6 +151,24 @@ def save_refresh_status(status_dict: dict) -> None:
     DATA_DIR.mkdir(exist_ok=True)
     with open(REFRESH_STATUS_FILE, "w", encoding="utf-8") as f:
         json.dump(status_dict, f, indent=2, ensure_ascii=False)
+
+
+def load_excluded_wallets() -> dict:
+    """Load excluded wallet addresses from file."""
+    if EXCLUDED_WALLETS_FILE.exists():
+        try:
+            with open(EXCLUDED_WALLETS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_excluded_wallets(excluded: dict) -> None:
+    """Save excluded wallet addresses to file."""
+    DATA_DIR.mkdir(exist_ok=True)
+    with open(EXCLUDED_WALLETS_FILE, "w", encoding="utf-8") as f:
+        json.dump(excluded, f, indent=2, ensure_ascii=False)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -314,7 +355,7 @@ def list_wallets():
     wallets = []
     if DATA_DIR.exists():
         for filepath in sorted(DATA_DIR.glob("*.json")):
-            if filepath.name in ("wallet_tags.json", "categories.json", "refresh_status.json"):
+            if filepath.name in ("wallet_tags.json", "categories.json", "refresh_status.json", "excluded_wallets.json"):
                 continue
             address = filepath.stem
             meta = get_wallet_meta(address)
@@ -515,6 +556,148 @@ def generate_profile(wallet: str):
     return profile_data
 
 
+# ── Wallet Exclusion (classification) ─────────────────────────────────────────
+
+
+def classify_wallet_address(address: str, context: str = "") -> dict:
+    """Use LLM with web search to classify whether a wallet is a known contract/bridge/exchange/etc."""
+    user_prompt = f"Classify this blockchain address: {address}"
+    if context:
+        user_prompt += f"\n\nTransaction context:\n{context}"
+
+    try:
+        response = call_llm(
+            CLASSIFY_SYSTEM_PROMPT,
+            user_prompt,
+            model=CLASSIFY_MODEL,
+            max_tokens=512,
+            plugins=[{"id": "web", "max_results": 3}],
+        )
+        # Parse JSON from response (handle possible markdown fencing)
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", response.strip())
+        json_match = re.search(r"\{[\s\S]*\}", cleaned)
+        if json_match:
+            return json.loads(json_match.group())
+    except Exception as e:
+        print(f"Classification failed for {address}: {e}")
+
+    return {
+        "is_excluded": False,
+        "label": "unknown",
+        "name": "",
+        "confidence": "low",
+        "reasoning": "Classification failed",
+    }
+
+
+def build_classification_context(address: str) -> str:
+    """Build transaction context for a wallet address from existing data."""
+    context_parts = []
+    if not DATA_DIR.exists():
+        return ""
+
+    for filepath in DATA_DIR.glob("*.json"):
+        if filepath.name in ("wallet_tags.json", "categories.json", "refresh_status.json", "excluded_wallets.json"):
+            continue
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            txs = data.get("transactions", [])
+            relevant = [
+                tx for tx in txs
+                if (tx.get("from", "").lower() == address or tx.get("to", "").lower() == address)
+                and tx.get("tx_type") == "transfer"
+            ]
+            if relevant:
+                symbols = set()
+                chains = set()
+                for tx in relevant[:20]:
+                    sym = tx.get("symbol", tx.get("token_symbol", ""))
+                    if sym:
+                        symbols.add(sym)
+                    chain = tx.get("chain", "")
+                    if chain:
+                        chains.add(chain)
+                context_parts.append(
+                    f"Found in {len(relevant)} transfers, tokens: {', '.join(symbols)}, chains: {', '.join(chains)}"
+                )
+        except Exception:
+            continue
+
+    return "; ".join(context_parts[:5])
+
+
+@app.get("/api/excluded-wallets")
+def get_excluded_wallets():
+    """Get all excluded wallet addresses."""
+    return load_excluded_wallets()
+
+
+@app.post("/api/excluded-wallets")
+async def add_excluded_wallet(request: Request):
+    """Manually add a wallet to the exclusion list."""
+    body = await request.json()
+    address = (body.get("address", "")).lower().strip()
+    if not address:
+        raise HTTPException(status_code=400, detail="Address is required")
+
+    excluded = load_excluded_wallets()
+    excluded[address] = {
+        "is_excluded": True,
+        "label": body.get("label", "other"),
+        "name": body.get("name", ""),
+        "reason": body.get("reason", "Manually excluded by user"),
+        "source": "manual",
+        "classified_at": datetime.now(timezone.utc).isoformat(),
+    }
+    save_excluded_wallets(excluded)
+    return {"address": address, **excluded[address]}
+
+
+@app.delete("/api/excluded-wallets/{address:path}")
+def remove_excluded_wallet(address: str):
+    """Remove a wallet from the exclusion list."""
+    address = address.lower()
+    excluded = load_excluded_wallets()
+    if address not in excluded:
+        raise HTTPException(status_code=404, detail="Address not in exclusion list")
+    removed = excluded.pop(address)
+    save_excluded_wallets(excluded)
+    return {"address": address, "status": "removed", **removed}
+
+
+@app.post("/api/classify-wallet/{address:path}")
+def classify_wallet(address: str):
+    """Classify a wallet address using LLM with web search. Auto-excludes if confident."""
+    address = address.lower()
+
+    # Check if already classified (cache hit)
+    classified = load_excluded_wallets()
+    if address in classified:
+        return {"address": address, "cached": True, **classified[address]}
+
+    # Build context and classify
+    context = build_classification_context(address)
+    classification = classify_wallet_address(address, context)
+
+    # Save ALL classification results as cache (both excluded and personal)
+    is_excluded = bool(
+        classification.get("is_excluded")
+        and classification.get("confidence") in ("medium", "high")
+    )
+    classified[address] = {
+        "is_excluded": is_excluded,
+        "label": classification.get("label", "unknown"),
+        "name": classification.get("name", ""),
+        "reason": classification.get("reasoning", ""),
+        "source": "llm",
+        "classified_at": datetime.now(timezone.utc).isoformat(),
+    }
+    save_excluded_wallets(classified)
+
+    return {"address": address, "cached": False, **classified[address]}
+
+
 def format_tx_for_frontend(tx: dict) -> dict:
     """Format a transaction for display in the frontend."""
     tx_type = tx.get("tx_type", "?")
@@ -685,7 +868,7 @@ async def start_bulk_refresh(request: Request):
         wallets = []
         if DATA_DIR.exists():
             for filepath in sorted(DATA_DIR.glob("*.json")):
-                if filepath.name in ("wallet_tags.json", "categories.json", "refresh_status.json"):
+                if filepath.name in ("wallet_tags.json", "categories.json", "refresh_status.json", "excluded_wallets.json"):
                     continue
                 wallets.append(filepath.stem)
     else:
@@ -812,10 +995,26 @@ def get_related_wallets(wallet: str):
 
     related.sort(key=lambda x: x["total_transfers"], reverse=True)
 
+    # Filter out excluded wallets and attach classification data
+    classified = load_excluded_wallets()
+    filtered_related = []
+    excluded_in_results = []
+    for rw in related:
+        entry = classified.get(rw["address"])
+        if entry and entry.get("is_excluded", False):
+            excluded_in_results.append({**rw, "exclusion": entry})
+        else:
+            # Attach classification if cached (even for non-excluded)
+            if entry:
+                rw["classification"] = entry
+            filtered_related.append(rw)
+
     return {
         "wallet": wallet,
-        "related_count": len(related),
-        "related_wallets": related,
+        "related_count": len(filtered_related),
+        "related_wallets": filtered_related,
+        "excluded_count": len(excluded_in_results),
+        "excluded_wallets": excluded_in_results,
     }
 
 

@@ -64,12 +64,17 @@ npm run build
 - `POST /api/refresh/{wallet}` — запуск фонового обновления (fetch + analyze)
 - `GET /api/refresh-status/{wallet}` — статус обновления для конкретного кошелька
 - `GET /api/active-tasks` — все активные задачи обновления
+- `GET /api/excluded-wallets` — список исключённых кошельков
+- `POST /api/excluded-wallets` — добавить кошелёк в исключения (manual)
+- `DELETE /api/excluded-wallets/{address}` — убрать из исключений
+- `POST /api/classify-wallet/{address}` — классифицировать кошелёк через LLM (auto-exclude if confident)
 
 ## Key Conventions
 - Interface language: **English**, Reports language: **Russian**
 - Transactions stored in `data/{wallet_address}.json`
 - Reports in `reports/{wallet_address}.md`, state in `reports/{wallet}_state.json`
 - Refresh status in `data/refresh_status.json` (persistent)
+- Excluded wallets in `data/excluded_wallets.json` (human-editable: set `is_excluded` to `false` to restore)
 - API keys rotate on 429 errors (up to 99 keys: CIELO_API_KEY_1..99)
 - Analysis is incremental: only new transactions are processed
 - Background tasks use non-daemon threads (continue independently from browser)
