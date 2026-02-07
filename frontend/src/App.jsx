@@ -136,49 +136,83 @@ function App() {
 
   // Auto-classification queue for related wallets
   const [classResults, setClassResults] = useState({}) // address → classification
-  const [classifyingAddr, setClassifyingAddr] = useState(null) // currently classifying
+  const [classifyingAddrs, setClassifyingAddrs] = useState([]) // currently classifying (batch)
+  const [batchSize, setBatchSize] = useState(3) // default, will be loaded from settings
 
-  // Sequential auto-classify: when relatedData loads, classify unclassified wallets one by one
+  // Load settings on mount
+  useEffect(() => {
+    fetch('/api/settings')
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data?.auto_classify_batch_size) {
+          setBatchSize(data.auto_classify_batch_size)
+        }
+      })
+      .catch(() => {})
+  }, [])
+
+  // Batch auto-classify: when relatedData loads, classify unclassified wallets in batches
   useEffect(() => {
     if (!relatedData?.related_wallets) return
 
     let cancelled = false
     const classify = async () => {
-      for (const rw of relatedData.related_wallets) {
-        if (cancelled) break
-        // Skip if already classified (from server cache or previous run)
-        if (rw.classification || classResults[rw.address]) continue
+      const unclassified = relatedData.related_wallets.filter(
+        rw => !rw.classification && !classResults[rw.address]
+      )
 
-        setClassifyingAddr(rw.address)
-        try {
-          const res = await fetch(`/api/classify-wallet/${rw.address}`, { method: 'POST' })
-          if (cancelled) break
-          if (res.ok) {
-            const data = await res.json()
-            setClassResults(prev => ({ ...prev, [rw.address]: data }))
-            // If excluded, refresh the list to move it to excluded section
-            if (data.is_excluded) {
-              setClassifyingAddr(null)
-              // Small delay then refresh
-              await new Promise(r => setTimeout(r, 300))
-              if (!cancelled) {
-                const refreshRes = await fetch(`/api/related-wallets/${relatedWallet.toLowerCase()}`)
-                if (refreshRes.ok && !cancelled) {
-                  const refreshed = await refreshRes.json()
-                  setRelatedData(refreshed)
-                }
-              }
-              return // restart the loop with refreshed data
+      // Process in batches
+      for (let i = 0; i < unclassified.length; i += batchSize) {
+        if (cancelled) break
+
+        const batch = unclassified.slice(i, i + batchSize)
+        const batchAddrs = batch.map(rw => rw.address)
+        setClassifyingAddrs(batchAddrs)
+
+        // Process batch in parallel
+        const results = await Promise.allSettled(
+          batch.map(async (rw) => {
+            const res = await fetch(`/api/classify-wallet/${rw.address}`, { method: 'POST' })
+            if (res.ok) {
+              const data = await res.json()
+              return { address: rw.address, data }
+            }
+            return null
+          })
+        )
+
+        if (cancelled) break
+
+        // Update results and check if any were excluded
+        let hasExcluded = false
+        results.forEach(result => {
+          if (result.status === 'fulfilled' && result.value) {
+            const { address, data } = result.value
+            setClassResults(prev => ({ ...prev, [address]: data }))
+            if (data.is_excluded) hasExcluded = true
+          }
+        })
+
+        // If any were excluded, refresh the list
+        if (hasExcluded && !cancelled) {
+          setClassifyingAddrs([])
+          await new Promise(r => setTimeout(r, 300))
+          if (!cancelled) {
+            const refreshRes = await fetch(`/api/related-wallets/${relatedWallet.toLowerCase()}`)
+            if (refreshRes.ok) {
+              const refreshed = await refreshRes.json()
+              setRelatedData(refreshed)
             }
           }
-        } catch { /* ignore */ }
+          return // restart with refreshed data
+        }
       }
-      if (!cancelled) setClassifyingAddr(null)
+      if (!cancelled) setClassifyingAddrs([])
     }
 
     classify()
     return () => { cancelled = true }
-  }, [relatedData]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [relatedData, batchSize]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Track which sections are NEW (by original index in markdown)
   const [oldSectionCount, setOldSectionCount] = useState(null)
@@ -384,8 +418,8 @@ function App() {
     setRelatedData(null)
     setRelatedWallet('')
     setShowExcluded(false)
-    setClassResults({})
-    setClassifyingAddr(null)
+    // Keep classResults to avoid re-classifying on modal reopen
+    setClassifyingAddrs([])
   }
 
   const handleRestoreWallet = useCallback(async (address) => {
@@ -641,8 +675,10 @@ function App() {
                   <span className="related-summary-hint">
                     (bidirectional transfers: sent + received)
                   </span>
-                  {classifyingAddr && (
-                    <span className="related-classifying-hint">Classifying wallets...</span>
+                  {classifyingAddrs.length > 0 && (
+                    <span className="related-classifying-hint">
+                      Classifying {classifyingAddrs.length} wallet{classifyingAddrs.length > 1 ? 's' : ''}...
+                    </span>
                   )}
                 </div>
 
@@ -668,7 +704,7 @@ function App() {
                       rw={rw}
                       mainWallet={relatedWallet}
                       classificationOverride={classResults[rw.address]}
-                      classifyingNow={classifyingAddr === rw.address}
+                      classifyingNow={classifyingAddrs.includes(rw.address)}
                     />
                   ))}
                 </div>

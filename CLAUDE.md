@@ -57,6 +57,7 @@ npm run build
 ```
 
 ## API Endpoints
+- `GET /api/settings` — получить настройки приложения (batch size и др.)
 - `GET /api/wallets` — список кошельков с метаданными
 - `GET /api/tags` — теги кошельков
 - `PUT /api/tags/{wallet}` — обновить тег
@@ -79,12 +80,14 @@ npm run build
 - Analysis is incremental: only new transactions are processed
 - Background tasks use non-daemon threads (continue independently from browser)
 - When adding a new wallet, fetch + analyze automatically starts
+- Related wallets auto-classify in batches (parallel processing, configurable via `AUTO_CLASSIFY_BATCH_SIZE`)
 
 ## Environment Variables (.env)
 - `CIELO_API_KEY` — primary Cielo Finance API key
 - `CIELO_API_KEY_1..N` — additional keys for rotation
 - `OPENROUTER_API_KEY` — OpenRouter API key for AI analysis
 - `FULL_CHRONOLOGY_COUNT` — number of recent analyses for full context (default: 1)
+- `AUTO_CLASSIFY_BATCH_SIZE` — number of related wallets to classify in parallel (default: 3)
 
 ## Important Notes
 - Don't commit `.env`, `data/`, `reports/` (in .gitignore)

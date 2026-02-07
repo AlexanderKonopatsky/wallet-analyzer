@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import os
 import re
 import sys
 import threading
@@ -95,6 +96,7 @@ PROFILE_SYSTEM_PROMPT = """Ты — опытный ончейн-аналитик
 
 # Wallet classification settings
 CLASSIFY_MODEL = "google/gemini-3-flash-preview"
+AUTO_CLASSIFY_BATCH_SIZE = int(os.getenv("AUTO_CLASSIFY_BATCH_SIZE", 3))
 CLASSIFY_SYSTEM_PROMPT = """You are a blockchain address classifier. Given an Ethereum-compatible wallet address and some context about its transaction behavior, determine if this address belongs to a known protocol, bridge, exchange, contract, DEX router, MEV bot, or dust spammer — i.e., NOT a personal wallet.
 
 Use the web search results to identify the address. Check if it matches any known protocol, bridge, exchange, or smart contract.
@@ -346,6 +348,14 @@ save_refresh_status(refresh_tasks)
 
 
 # ── API Endpoints ─────────────────────────────────────────────────────────────
+
+
+@app.get("/api/settings")
+def get_settings():
+    """Get application settings."""
+    return {
+        "auto_classify_batch_size": AUTO_CLASSIFY_BATCH_SIZE,
+    }
 
 
 @app.get("/api/wallets")
