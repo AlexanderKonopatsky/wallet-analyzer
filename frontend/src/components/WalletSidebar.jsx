@@ -4,6 +4,7 @@ import './WalletSidebar.css'
 const WALLET_ACTIONS = [
   { id: 'report', label: 'Репорт' },
   { id: 'analysis', label: 'Анализ' },
+  { id: 'related', label: 'Связанные' },
   { id: 'profile', label: 'Профиль' },
 ]
 

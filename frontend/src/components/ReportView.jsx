@@ -277,4 +277,5 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
   )
 }
 
+export { TxRow }
 export default ReportView

@@ -1,12 +1,99 @@
 import { useState, useEffect, useCallback } from 'react'
 import './App.css'
 import WalletSidebar from './components/WalletSidebar'
-import ReportView from './components/ReportView'
+import ReportView, { TxRow } from './components/ReportView'
 import ProfileView from './components/ProfileView'
 
 function countSections(markdown) {
   if (!markdown) return 0
   return (markdown.match(/^### /gm) || []).length
+}
+
+function RelatedCard({ rw, mainWallet }) {
+  const [expandedDir, setExpandedDir] = useState(null) // 'sent' | 'received' | null
+  const [txs, setTxs] = useState(null)
+  const [txLoading, setTxLoading] = useState(false)
+
+  const toggleTxs = async (direction) => {
+    if (expandedDir === direction) {
+      setExpandedDir(null)
+      return
+    }
+    setExpandedDir(direction)
+    setTxLoading(true)
+    setTxs(null)
+    try {
+      const res = await fetch(
+        `/api/related-transactions/${mainWallet}?counterparty=${rw.address}&direction=${direction}`
+      )
+      if (res.ok) {
+        setTxs(await res.json())
+      } else {
+        setTxs([])
+      }
+    } catch {
+      setTxs([])
+    } finally {
+      setTxLoading(false)
+    }
+  }
+
+  return (
+    <div className="related-card">
+      <div className="related-card-top">
+        <span className="related-card-address">
+          {rw.address.slice(0, 10)}...{rw.address.slice(-6)}
+        </span>
+        <span className="related-card-total">
+          {rw.total_transfers} transfers
+        </span>
+      </div>
+      <div className="related-card-stats">
+        <div className="related-stat">
+          <span className="related-stat-label">Sent</span>
+          <span
+            className={`related-stat-value related-stat-sent related-stat-clickable ${expandedDir === 'sent' ? 'related-stat-active' : ''}`}
+            onClick={() => toggleTxs('sent')}
+          >
+            {rw.sent_count}x &middot; ${rw.total_usd_sent.toLocaleString()}
+          </span>
+          <span className="related-stat-tokens">
+            {rw.tokens_sent.join(', ')}
+          </span>
+        </div>
+        <div className="related-stat">
+          <span className="related-stat-label">Received</span>
+          <span
+            className={`related-stat-value related-stat-recv related-stat-clickable ${expandedDir === 'received' ? 'related-stat-active' : ''}`}
+            onClick={() => toggleTxs('received')}
+          >
+            {rw.received_count}x &middot; ${rw.total_usd_received.toLocaleString()}
+          </span>
+          <span className="related-stat-tokens">
+            {rw.tokens_received.join(', ')}
+          </span>
+        </div>
+      </div>
+
+      {expandedDir && (
+        <div className="related-tx-list">
+          {txLoading && <div className="related-tx-loading">Loading...</div>}
+          {txs && txs.length === 0 && (
+            <div className="related-tx-empty">No transactions found</div>
+          )}
+          {txs && txs.map((tx, i) => (
+            <TxRow key={tx.tx_hash || i} tx={tx} />
+          ))}
+        </div>
+      )}
+
+      <div className="related-card-dates">
+        {new Date(rw.first_interaction * 1000).toLocaleDateString('ru-RU')}
+        {' — '}
+        {new Date(rw.last_interaction * 1000).toLocaleDateString('ru-RU')}
+      </div>
+    </div>
+  )
 }
 
 function App() {
@@ -22,6 +109,11 @@ function App() {
   const [activeView, setActiveView] = useState('report') // 'report' | 'profile'
   const [profile, setProfile] = useState(null)
   const [profileLoading, setProfileLoading] = useState(false)
+
+  // Related wallets modal
+  const [relatedData, setRelatedData] = useState(null)
+  const [relatedLoading, setRelatedLoading] = useState(false)
+  const [relatedWallet, setRelatedWallet] = useState('')
 
   // Track which sections are NEW (by original index in markdown)
   const [oldSectionCount, setOldSectionCount] = useState(null)
@@ -206,6 +298,28 @@ function App() {
     }
   }, [])
 
+  const fetchRelatedWallets = useCallback(async (wallet) => {
+    if (!wallet) return
+    setRelatedWallet(wallet)
+    setRelatedLoading(true)
+    setRelatedData(null)
+    try {
+      const res = await fetch(`/api/related-wallets/${wallet.toLowerCase()}`)
+      if (!res.ok) throw new Error('Failed to load related wallets')
+      const data = await res.json()
+      setRelatedData(data)
+    } catch (err) {
+      setRelatedData({ error: err.message })
+    } finally {
+      setRelatedLoading(false)
+    }
+  }, [])
+
+  const closeRelatedModal = () => {
+    setRelatedData(null)
+    setRelatedWallet('')
+  }
+
   // Monitor refresh status (polling)
   const startMonitoring = useCallback((wallet) => {
     if (!wallet) return
@@ -370,7 +484,9 @@ function App() {
           onRefresh={refreshWallets}
           onBulkRefresh={startBulkRefresh}
           onAction={(wallet, actionId) => {
-            if (actionId === 'profile') {
+            if (actionId === 'related') {
+              fetchRelatedWallets(wallet)
+            } else if (actionId === 'profile') {
               loadProfile(wallet)
             } else if (actionId === 'report') {
               setActiveView('report')
@@ -420,6 +536,52 @@ function App() {
           )}
         </div>
       </div>
+
+      {/* Related wallets modal */}
+      {(relatedData || relatedLoading) && (
+        <div className="modal-overlay" onClick={closeRelatedModal}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Related Wallets</h2>
+              <button className="modal-close" onClick={closeRelatedModal}>&times;</button>
+            </div>
+            <div className="modal-subheader">
+              {relatedWallet.slice(0, 6)}...{relatedWallet.slice(-4)}
+            </div>
+
+            {relatedLoading && (
+              <div className="modal-loading">Analyzing transactions...</div>
+            )}
+
+            {relatedData?.error && (
+              <div className="error-banner">{relatedData.error}</div>
+            )}
+
+            {relatedData && !relatedData.error && (
+              <>
+                <div className="related-summary">
+                  Found <strong>{relatedData.related_count}</strong> related wallets
+                  <span className="related-summary-hint">
+                    (bidirectional transfers: sent + received)
+                  </span>
+                </div>
+
+                {relatedData.related_count === 0 && (
+                  <div className="related-empty">
+                    No wallets with bidirectional transfers found.
+                  </div>
+                )}
+
+                <div className="related-list">
+                  {relatedData.related_wallets.map(rw => (
+                    <RelatedCard key={rw.address} rw={rw} mainWallet={relatedWallet} />
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -749,6 +749,112 @@ def get_active_tasks():
     return active
 
 
+@app.get("/api/related-wallets/{wallet}")
+def get_related_wallets(wallet: str):
+    """Find wallets that have bidirectional transfers with this wallet."""
+    wallet = wallet.lower()
+    raw_txs = load_transactions(wallet)
+    if not raw_txs:
+        raise HTTPException(status_code=404, detail="No transaction data found")
+
+    txs = filter_transactions(raw_txs)
+
+    # Track outgoing and incoming transfers
+    sent_to: dict[str, list] = {}
+    received_from: dict[str, list] = {}
+
+    for tx in txs:
+        if tx.get("tx_type") != "transfer":
+            continue
+
+        frm = (tx.get("from") or "").lower()
+        to = (tx.get("to") or "").lower()
+        sym = tx.get("symbol", tx.get("token_symbol", "?"))
+        amt = tx.get("amount", tx.get("token_amount", 0))
+        usd = tx.get("amount_usd", tx.get("token_amount_usd", 0)) or 0
+        ts = tx.get("timestamp", 0)
+
+        transfer_info = {"timestamp": ts, "amount_usd": usd, "symbol": sym, "amount": amt}
+
+        if frm == wallet and to and to != wallet:
+            sent_to.setdefault(to, []).append(transfer_info)
+        elif to == wallet and frm and frm != wallet:
+            received_from.setdefault(frm, []).append(transfer_info)
+
+    # Find bidirectional wallets (sent TO and received FROM)
+    related = []
+    bidirectional_addrs = set(sent_to.keys()) & set(received_from.keys())
+
+    for addr in bidirectional_addrs:
+        s_txs = sent_to[addr]
+        r_txs = received_from[addr]
+
+        all_timestamps = [t["timestamp"] for t in s_txs + r_txs]
+        total_usd_sent = sum(t["amount_usd"] for t in s_txs)
+        total_usd_received = sum(t["amount_usd"] for t in r_txs)
+
+        # Collect unique tokens
+        tokens_sent = list({t["symbol"] for t in s_txs})
+        tokens_received = list({t["symbol"] for t in r_txs})
+
+        related.append({
+            "address": addr,
+            "sent_count": len(s_txs),
+            "received_count": len(r_txs),
+            "total_transfers": len(s_txs) + len(r_txs),
+            "total_usd_sent": round(total_usd_sent, 2),
+            "total_usd_received": round(total_usd_received, 2),
+            "tokens_sent": tokens_sent,
+            "tokens_received": tokens_received,
+            "first_interaction": min(all_timestamps) if all_timestamps else 0,
+            "last_interaction": max(all_timestamps) if all_timestamps else 0,
+        })
+
+    related.sort(key=lambda x: x["total_transfers"], reverse=True)
+
+    return {
+        "wallet": wallet,
+        "related_count": len(related),
+        "related_wallets": related,
+    }
+
+
+@app.get("/api/related-transactions/{wallet}")
+def get_related_transactions(wallet: str, counterparty: str, direction: str = "all"):
+    """Get transfer transactions between wallet and a specific counterparty."""
+    wallet = wallet.lower()
+    counterparty = counterparty.lower()
+
+    raw_txs = load_transactions(wallet)
+    if not raw_txs:
+        raise HTTPException(status_code=404, detail="No transaction data found")
+
+    txs = filter_transactions(raw_txs)
+    result = []
+
+    for tx in txs:
+        if tx.get("tx_type") != "transfer":
+            continue
+
+        frm = (tx.get("from") or "").lower()
+        to = (tx.get("to") or "").lower()
+
+        is_sent = frm == wallet and to == counterparty
+        is_received = to == wallet and frm == counterparty
+
+        if direction == "sent" and not is_sent:
+            continue
+        if direction == "received" and not is_received:
+            continue
+        if direction == "all" and not (is_sent or is_received):
+            continue
+
+        result.append(format_tx_for_frontend(tx))
+
+    result.sort(key=lambda x: x.get("timestamp", 0))
+    return result
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
