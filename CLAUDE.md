@@ -66,22 +66,22 @@ npm run build
 - `GET /api/active-tasks` — все активные задачи обновления
 
 ## Key Conventions
-- Язык интерфейса и отчётов: **русский**
-- Транзакции хранятся в `data/{wallet_address}.json`
-- Отчёты в `reports/{wallet_address}.md`, состояние в `reports/{wallet}_state.json`
-- Статус обновлений в `data/refresh_status.json` (персистентный)
-- Ключи API ротируются при 429 ошибках (до 99 ключей: CIELO_API_KEY_1..99)
-- Анализ инкрементальный: обрабатываются только новые транзакции
-- Фоновые задачи через non-daemon threads (продолжаются независимо от браузера)
-- При добавлении нового кошелька автоматически запускается fetch + analyze
+- Interface language: **English**, Reports language: **Russian**
+- Transactions stored in `data/{wallet_address}.json`
+- Reports in `reports/{wallet_address}.md`, state in `reports/{wallet}_state.json`
+- Refresh status in `data/refresh_status.json` (persistent)
+- API keys rotate on 429 errors (up to 99 keys: CIELO_API_KEY_1..99)
+- Analysis is incremental: only new transactions are processed
+- Background tasks use non-daemon threads (continue independently from browser)
+- When adding a new wallet, fetch + analyze automatically starts
 
 ## Environment Variables (.env)
-- `CIELO_API_KEY` — основной ключ Cielo Finance
-- `CIELO_API_KEY_1..N` — дополнительные ключи для ротации
-- `OPENROUTER_API_KEY` — ключ OpenRouter для AI-анализа
-- `FULL_CHRONOLOGY_COUNT` — кол-во последних анализов для полного контекста (default: 1)
+- `CIELO_API_KEY` — primary Cielo Finance API key
+- `CIELO_API_KEY_1..N` — additional keys for rotation
+- `OPENROUTER_API_KEY` — OpenRouter API key for AI analysis
+- `FULL_CHRONOLOGY_COUNT` — number of recent analyses for full context (default: 1)
 
 ## Important Notes
-- Не коммитить `.env`, `data/`, `reports/` (в .gitignore)
-- CORS настроен для localhost:5173 и localhost:5174
-- Vite проксирует `/api` на backend (порт 8000)
+- Don't commit `.env`, `data/`, `reports/` (in .gitignore)
+- CORS configured for localhost:5173 and localhost:5174
+- Vite proxies `/api` to backend (port 8000)

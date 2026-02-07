@@ -169,21 +169,21 @@ const DayCard = memo(function DayCard({ date, content, walletAddress, isNew }) {
       <div className="day-card-header">
         <span>
           {date}
-          {isNew && <span className="new-badge" title="Новые данные">✨ NEW</span>}
+          {isNew && <span className="new-badge" title="New data">✨ NEW</span>}
         </span>
         {walletAddress && dateMatches.length > 0 && (
           <button
             className={`tx-toggle-btn ${expanded ? 'tx-toggle-expanded' : ''}`}
             onClick={handleToggle}
           >
-            {expanded ? 'Скрыть' : 'Транзакции'}
+            {expanded ? 'Hide' : 'Transactions'}
           </button>
         )}
       </div>
       {expanded && (
         <div className="tx-list">
           {txLoading && (
-            <div className="tx-loading">Загрузка...</div>
+            <div className="tx-loading">Loading...</div>
           )}
           {txs && txs.slice(0, txVisible).map((tx, i) => (
             <TxRow key={tx.tx_hash || i} tx={tx} />
@@ -193,7 +193,7 @@ const DayCard = memo(function DayCard({ date, content, walletAddress, isNew }) {
               className="tx-show-more"
               onClick={() => setTxVisible(v => v + TX_PAGE_SIZE)}
             >
-              Показать ещё {Math.min(remainingTxs, TX_PAGE_SIZE)} из {remainingTxs}
+              Show {Math.min(remainingTxs, TX_PAGE_SIZE)} more of {remainingTxs}
             </button>
           )}
         </div>

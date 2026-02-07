@@ -2,10 +2,10 @@ import { useState, useEffect } from 'react'
 import './WalletSidebar.css'
 
 const WALLET_ACTIONS = [
-  { id: 'report', label: 'Репорт' },
-  { id: 'analysis', label: 'Анализ' },
-  { id: 'related', label: 'Связанные' },
-  { id: 'profile', label: 'Профиль' },
+  { id: 'report', label: 'Report' },
+  { id: 'analysis', label: 'Analysis' },
+  { id: 'related', label: 'Related' },
+  { id: 'profile', label: 'Profile' },
 ]
 
 function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag, onRefresh, onBulkRefresh }) {
@@ -126,7 +126,7 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
   }
 
   const handleDeleteCategory = async (categoryId) => {
-    if (!confirm('Удалить категорию? Кошельки станут без категории.')) return
+    if (!confirm('Delete category? Wallets will become uncategorized.')) return
 
     try {
       const res = await fetch(`/api/categories/${categoryId}`, { method: 'DELETE' })
@@ -260,7 +260,7 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
                   }
                   if (e.key === 'Escape') setEditingAddr(null)
                 }}
-                placeholder="Имя кошелька..."
+                placeholder="Wallet name..."
                 autoFocus
                 maxLength={50}
               />
@@ -289,9 +289,9 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
                 setTagValue('')
                 setEditingAddr(addr)
               }}
-            >+ Добавить имя</span>
+            >+ Add name</span>
           )}
-          {w.has_new_data && <span className="wallet-card-badge" title="Новые данные" />}
+          {w.has_new_data && <span className="wallet-card-badge" title="New data" />}
         </div>
         <div className="wallet-card-bottom">
           <span className="wallet-card-address">{shortAddr(w.address)}</span>
@@ -337,22 +337,22 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
           </button>
         </div>
         <button className="category-add-btn" onClick={handleAddCategory}>
-          ➕ Добавить категорию
+          ➕ Add Category
         </button>
         <button
           className="bulk-refresh-btn"
           onClick={() => onBulkRefresh?.('all')}
-          title="Обновить все кошельки"
+          title="Update all wallets"
         >
-          🔄 Обновить все
+          🔄 Update All
         </button>
       </div>
 
       <div className="wallet-list">
         {wallets.length === 0 && (
           <div className="wallet-list-empty">
-            Нет отслеживаемых кошельков.<br />
-            Вставьте адрес выше.
+            No tracked wallets.<br />
+            Paste address above.
           </div>
         )}
 
@@ -384,7 +384,7 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
                     e.stopPropagation()
                     onBulkRefresh?.(cat.id)
                   }}
-                  title="Обновить все кошельки в категории"
+                  title="Update all wallets in category"
                 >
                   🔄
                 </button>
@@ -408,7 +408,7 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
               onDragOver={handleDragOver}
             >
               <div className="category-header-content">
-                <span className="category-name">Без категории</span>
+                <span className="category-name">Uncategorized</span>
                 <span className="category-count">({uncategorizedWallets.length})</span>
               </div>
             </div>
@@ -423,19 +423,19 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
       {showCategoryModal && (
         <div className="modal-overlay" onClick={() => setShowCategoryModal(false)}>
           <div className="modal-content" onClick={e => e.stopPropagation()}>
-            <h3>{categoryModalMode === 'create' ? 'Создать категорию' : 'Редактировать категорию'}</h3>
+            <h3>{categoryModalMode === 'create' ? 'Create Category' : 'Edit Category'}</h3>
             <div className="modal-field">
-              <label>Название:</label>
+              <label>Name:</label>
               <input
                 type="text"
                 value={editingCategory.name}
                 onChange={e => setEditingCategory({ ...editingCategory, name: e.target.value })}
-                placeholder="Название категории"
+                placeholder="Category name"
                 autoFocus
               />
             </div>
             <div className="modal-field">
-              <label>Цвет:</label>
+              <label>Color:</label>
               <input
                 type="color"
                 value={editingCategory.color}
@@ -444,9 +444,9 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
             </div>
             <div className="modal-actions">
               <button onClick={handleSaveCategory} disabled={!editingCategory.name.trim()}>
-                {categoryModalMode === 'create' ? 'Создать' : 'Сохранить'}
+                {categoryModalMode === 'create' ? 'Create' : 'Save'}
               </button>
-              <button onClick={() => setShowCategoryModal(false)}>Отмена</button>
+              <button onClick={() => setShowCategoryModal(false)}>Cancel</button>
             </div>
           </div>
         </div>
@@ -465,19 +465,19 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
                 handleEditCategory(contextMenu.item)
                 setContextMenu(null)
               }}>
-                ✏️ Редактировать
+                ✏️ Edit
               </div>
               <div className="context-menu-item" onClick={() => {
                 handleDeleteCategory(contextMenu.item.id)
                 setContextMenu(null)
               }}>
-                🗑️ Удалить
+                🗑️ Delete
               </div>
             </>
           )}
           {contextMenu.type === 'wallet' && (
             <>
-              <div className="context-menu-header">Переместить в:</div>
+              <div className="context-menu-header">Move to:</div>
               {categories.map(cat => (
                 <div
                   key={cat.id}
@@ -498,7 +498,7 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
                   setContextMenu(null)
                 }}
               >
-                Убрать из категории
+                Remove from category
               </div>
             </>
           )}

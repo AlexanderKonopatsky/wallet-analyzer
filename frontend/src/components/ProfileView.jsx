@@ -6,7 +6,7 @@ function ProfileView({ profile, loading, onRegenerate }) {
       <div className="profile-view">
         <div className="profile-loading">
           <div className="profile-spinner" />
-          <span>Генерация профиля...</span>
+          <span>Generating profile...</span>
         </div>
       </div>
     )
@@ -19,14 +19,14 @@ function ProfileView({ profile, loading, onRegenerate }) {
   return (
     <div className="profile-view">
       <div className="profile-header">
-        <h2>Профиль кошелька</h2>
+        <h2>Wallet Profile</h2>
         <button className="btn btn-refresh" onClick={onRegenerate}>
-          Обновить профиль
+          Regenerate Profile
         </button>
       </div>
 
       <div className="profile-meta">
-        Сгенерировано: {new Date(profile.generated_at).toLocaleString('ru-RU')}
+        Generated: {new Date(profile.generated_at).toLocaleString('en-US')}
       </div>
 
       <div className="profile-content">

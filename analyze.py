@@ -94,14 +94,14 @@ def prompt_period(txs: list) -> tuple[datetime | None, datetime | None]:
     min_date = ts_to_date(min(timestamps))
     max_date = ts_to_date(max(timestamps))
 
-    print(f"\nДоступный период транзакций: {min_date} — {max_date}")
-    print("Выберите период анализа:")
-    print("  1) Весь период")
-    print("  2) Последние 7 дней")
-    print("  3) Последние 30 дней")
-    print("  4) Указать вручную")
+    print(f"\nAvailable transaction period: {min_date} — {max_date}")
+    print("Select analysis period:")
+    print("  1) All period")
+    print("  2) Last 7 days")
+    print("  3) Last 30 days")
+    print("  4) Custom date range")
 
-    choice = input("Ваш выбор (1-4) [1]: ").strip() or "1"
+    choice = input("Your choice (1-4) [1]: ").strip() or "1"
 
     if choice == "1":
         return None, None
@@ -109,30 +109,30 @@ def prompt_period(txs: list) -> tuple[datetime | None, datetime | None]:
     if choice == "2":
         date_to = datetime.fromtimestamp(max(timestamps), tz=timezone.utc)
         date_from = date_to - timedelta(days=7)
-        print(f"Период: {date_from.strftime('%Y-%m-%d')} — {date_to.strftime('%Y-%m-%d')}")
+        print(f"Period: {date_from.strftime('%Y-%m-%d')} — {date_to.strftime('%Y-%m-%d')}")
         return date_from, date_to
 
     if choice == "3":
         date_to = datetime.fromtimestamp(max(timestamps), tz=timezone.utc)
         date_from = date_to - timedelta(days=30)
-        print(f"Период: {date_from.strftime('%Y-%m-%d')} — {date_to.strftime('%Y-%m-%d')}")
+        print(f"Period: {date_from.strftime('%Y-%m-%d')} — {date_to.strftime('%Y-%m-%d')}")
         return date_from, date_to
 
     if choice == "4":
-        date_from_str = input(f"Дата начала (YYYY-MM-DD) [{min_date}]: ").strip() or min_date
-        date_to_str = input(f"Дата конца (YYYY-MM-DD) [{max_date}]: ").strip() or max_date
+        date_from_str = input(f"Start date (YYYY-MM-DD) [{min_date}]: ").strip() or min_date
+        date_to_str = input(f"End date (YYYY-MM-DD) [{max_date}]: ").strip() or max_date
 
         date_from = parse_date(date_from_str)
         date_to = parse_date(date_to_str)
 
         if date_from is None:
-            print(f"Неверный формат даты начала: {date_from_str}, используется {min_date}")
+            print(f"Invalid start date format: {date_from_str}, using {min_date}")
             date_from = parse_date(min_date)
         if date_to is None:
-            print(f"Неверный формат даты конца: {date_to_str}, используется {max_date}")
+            print(f"Invalid end date format: {date_to_str}, using {max_date}")
             date_to = parse_date(max_date)
 
-        print(f"Период: {date_from.strftime('%Y-%m-%d')} — {date_to.strftime('%Y-%m-%d')}")
+        print(f"Period: {date_from.strftime('%Y-%m-%d')} — {date_to.strftime('%Y-%m-%d')}")
         return date_from, date_to
 
     return None, None
@@ -158,7 +158,7 @@ def get_tx_key(tx: dict) -> str:
 def load_transactions(wallet: str) -> list:
     filepath = DATA_DIR / f"{wallet.lower()}.json"
     if not filepath.exists():
-        print(f"Файл не найден: {filepath}")
+        print(f"File not found: {filepath}")
         return []
     with open(filepath, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -407,15 +407,15 @@ def analyze_wallet(wallet: str) -> None:
         return
 
     txs = filter_transactions(raw_txs)
-    print(f"Найдено {len(raw_txs)} транзакций, после фильтрации: {len(txs)}")
+    print(f"Found {len(raw_txs)} transactions, after filtering: {len(txs)}")
 
     # Ask user to select analysis period
     date_from, date_to = prompt_period(txs)
     if date_from or date_to:
         txs = filter_by_period(txs, date_from, date_to)
-        print(f"После фильтрации по периоду: {len(txs)} транзакций")
+        print(f"After filtering by period: {len(txs)} transactions")
         if not txs:
-            print("Нет транзакций за выбранный период.")
+            print("No transactions for the selected period.")
             return
 
     # Load existing state
@@ -431,7 +431,7 @@ def analyze_wallet(wallet: str) -> None:
     if resuming:
         # Resume interrupted batch: re-select the same transactions
         new_txs = [tx for tx in txs if get_tx_key(tx) in pending_keys]
-        print(f"Продолжаем прерванный анализ: {len(new_txs)} транзакций")
+        print(f"Continuing interrupted analysis: {len(new_txs)} transactions")
     else:
         # Find genuinely new transactions
         new_txs = [tx for tx in txs if get_tx_key(tx) not in processed_keys]
@@ -447,12 +447,12 @@ def analyze_wallet(wallet: str) -> None:
                     "processed_tx_keys": all_keys,
                     "pending_tx_keys": [],
                 })
-                print("Состояние мигрировано на новый формат. Новых транзакций не найдено.")
+                print("State migrated to new format. No new transactions found.")
             else:
-                print("Новых транзакций не найдено.")
+                print("No new transactions found.")
             return
 
-        print(f"Найдено {len(new_txs)} новых транзакций для анализа")
+        print(f"Found {len(new_txs)} new transactions for analysis")
 
     # Track keys of current batch (for resume capability)
     batch_keys = [get_tx_key(tx) for tx in new_txs]
@@ -460,17 +460,17 @@ def analyze_wallet(wallet: str) -> None:
     day_groups = group_by_days(new_txs)
     chunks = make_chunks(day_groups)
     total_chunks = len(chunks)
-    print(f"Сформировано {total_chunks} чанков для анализа\n")
+    print(f"Formed {total_chunks} chunks for analysis\n")
 
     if resuming:
-        print(f"Продолжаем с чанка {start_chunk + 1}/{total_chunks}\n")
+        print(f"Continuing from chunk {start_chunk + 1}/{total_chunks}\n")
 
     for i in range(start_chunk, total_chunks):
         chunk = chunks[i]
         days_list = list(chunk.keys())
         days_range = f"{days_list[0]} — {days_list[-1]}" if len(days_list) > 1 else days_list[0]
         tx_count = sum(len(dtxs) for dtxs in chunk.values())
-        print(f"Обработка чанка {i + 1}/{total_chunks} (дни: {days_range}, транзакций: {tx_count})...")
+        print(f"Processing chunk {i + 1}/{total_chunks} (days: {days_range}, transactions: {tx_count})...")
 
         # Format transactions for this chunk
         formatted_lines = []
@@ -529,14 +529,14 @@ def analyze_wallet(wallet: str) -> None:
         try:
             response = call_llm(SYSTEM_PROMPT, user_prompt)
         except Exception as e:
-            print(f"  Ошибка API: {e}")
+            print(f"  API Error: {e}")
             save_state(wallet, {
                 "chunk_index": i,
                 "chronology_parts": chronology_parts,
                 "processed_tx_keys": list(processed_keys),
                 "pending_tx_keys": batch_keys,
             })
-            print(f"  Состояние сохранено, можно продолжить позже.")
+            print(f"  State saved, you can continue later.")
             return
 
         chronology = parse_llm_response(response)
@@ -551,7 +551,7 @@ def analyze_wallet(wallet: str) -> None:
             "processed_tx_keys": list(processed_keys),
             "pending_tx_keys": batch_keys,
         })
-        print(f"  Готово.")
+        print(f"  Done.")
 
     # Batch complete: move pending keys to processed
     processed_keys.update(batch_keys)
@@ -563,17 +563,17 @@ def analyze_wallet(wallet: str) -> None:
     })
 
     report_path = save_report(wallet, chronology_parts)
-    print(f"\nАнализ завершён! Результат: {report_path}")
+    print(f"\nAnalysis completed! Result: {report_path}")
 
 
 def main() -> None:
     if not OPENROUTER_API_KEY:
-        print("Ошибка: укажите OPENROUTER_API_KEY в .env файле")
+        print("Error: specify OPENROUTER_API_KEY in .env file")
         return
 
-    wallet = input("Введите адрес кошелька: ").strip()
+    wallet = input("Enter wallet address: ").strip()
     if not wallet:
-        print("Адрес не может быть пустым.")
+        print("Address cannot be empty.")
         return
 
     analyze_wallet(wallet)

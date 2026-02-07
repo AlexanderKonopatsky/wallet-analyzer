@@ -88,9 +88,9 @@ function RelatedCard({ rw, mainWallet }) {
       )}
 
       <div className="related-card-dates">
-        {new Date(rw.first_interaction * 1000).toLocaleDateString('ru-RU')}
+        {new Date(rw.first_interaction * 1000).toLocaleDateString('en-US')}
         {' — '}
-        {new Date(rw.last_interaction * 1000).toLocaleDateString('ru-RU')}
+        {new Date(rw.last_interaction * 1000).toLocaleDateString('en-US')}
       </div>
     </div>
   )
@@ -254,7 +254,7 @@ function App() {
       const res = await fetch(`/api/report/${wallet.toLowerCase()}`)
       if (res.status === 404) {
         setReport(null)
-        setError('Отчёт не найден. Нажмите «Обновить данные» для загрузки и анализа транзакций.')
+        setError("Report not found. Click 'Update Data' to fetch and analyze transactions.")
         return
       }
       if (!res.ok) throw new Error('Failed to load report')
@@ -393,7 +393,7 @@ function App() {
       if (data.status === 'started') {
         setRefreshStatus({
           status: 'fetching',
-          detail: `Обновление ${data.started.length} кошельков...`
+          detail: `Updating ${data.started.length} wallets...`
         })
 
         // Start polling for all wallets status
@@ -405,7 +405,7 @@ function App() {
             if (Object.keys(activeTasks).length === 0) {
               // All done
               clearInterval(pollBulk)
-              setRefreshStatus({ status: 'done', detail: 'Все обновления завершены' })
+              setRefreshStatus({ status: 'done', detail: 'All updates completed' })
               await refreshWallets()
               setTimeout(() => setRefreshStatus(null), 3000)
             } else {
@@ -413,7 +413,7 @@ function App() {
               const count = Object.keys(activeTasks).length
               setRefreshStatus({
                 status: 'analyzing',
-                detail: `Обновляется ${count} кошельков...`
+                detail: `Updating ${count} wallets...`
               })
             }
           } catch (err) {
@@ -422,7 +422,7 @@ function App() {
           }
         }, 3000)
       } else if (data.status === 'no_wallets') {
-        setRefreshStatus({ status: 'error', detail: 'Нет кошельков для обновления' })
+        setRefreshStatus({ status: 'error', detail: 'No wallets to update' })
         setTimeout(() => setRefreshStatus(null), 3000)
       }
     } catch (err) {
@@ -448,7 +448,7 @@ function App() {
         if (res.status === 404) {
           // No report exists - this is a new wallet, start refresh automatically
           setLoading(false)
-          setError('Новый кошелёк. Запускаем загрузку и анализ...')
+          setError('New wallet. Starting fetch and analysis...')
           await startRefresh(wallet)
         } else if (!res.ok) {
           throw new Error('Failed to load report')
@@ -504,14 +504,14 @@ function App() {
                 onClick={() => startRefresh(selectedWallet)}
                 disabled={isRefreshing}
               >
-                {isRefreshing ? 'Обновление...' : 'Обновить данные'}
+                {isRefreshing ? 'Updating...' : 'Update Data'}
               </button>
               {refreshStatus && (
                 <span className={`refresh-status status-${refreshStatus.status}`}>
-                  {refreshStatus.status === 'fetching' && '● Загрузка транзакций...'}
-                  {refreshStatus.status === 'analyzing' && '● AI-анализ...'}
-                  {refreshStatus.status === 'done' && '✓ Готово!'}
-                  {refreshStatus.status === 'error' && '✗ Ошибка'}
+                  {refreshStatus.status === 'fetching' && '● Fetching transactions...'}
+                  {refreshStatus.status === 'analyzing' && '● AI analysis...'}
+                  {refreshStatus.status === 'done' && '✓ Done!'}
+                  {refreshStatus.status === 'error' && '✗ Error'}
                 </span>
               )}
             </div>
