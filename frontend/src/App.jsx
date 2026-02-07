@@ -135,9 +135,26 @@ function App() {
   const [showExcluded, setShowExcluded] = useState(false)
 
   // Auto-classification queue for related wallets
-  const [classResults, setClassResults] = useState({}) // address → classification
+  const [classResults, setClassResults] = useState(() => {
+    // Load from localStorage on mount
+    try {
+      const saved = localStorage.getItem('wallet_classification_cache')
+      return saved ? JSON.parse(saved) : {}
+    } catch {
+      return {}
+    }
+  }) // address → classification
   const [classifyingAddrs, setClassifyingAddrs] = useState([]) // currently classifying (batch)
   const [batchSize, setBatchSize] = useState(3) // default, will be loaded from settings
+
+  // Save classResults to localStorage whenever it changes
+  useEffect(() => {
+    try {
+      localStorage.setItem('wallet_classification_cache', JSON.stringify(classResults))
+    } catch (err) {
+      console.error('Failed to save classification cache:', err)
+    }
+  }, [classResults])
 
   // Load settings on mount
   useEffect(() => {
@@ -161,23 +178,51 @@ function App() {
         rw => !rw.classification && !classResults[rw.address]
       )
 
+      console.log('[Auto-classify] Total wallets:', relatedData.related_wallets.length)
+      console.log('[Auto-classify] Already classified:', relatedData.related_wallets.filter(rw => rw.classification).length)
+      console.log('[Auto-classify] Cached results:', Object.keys(classResults).length)
+      console.log('[Auto-classify] To classify:', unclassified.length)
+
+      if (unclassified.length === 0) {
+        console.log('[Auto-classify] Nothing to classify, skipping')
+        return
+      }
+
       // Process in batches
       for (let i = 0; i < unclassified.length; i += batchSize) {
         if (cancelled) break
 
         const batch = unclassified.slice(i, i + batchSize)
         const batchAddrs = batch.map(rw => rw.address)
+        console.log(`[Auto-classify] Processing batch ${Math.floor(i / batchSize) + 1}:`, batchAddrs)
         setClassifyingAddrs(batchAddrs)
 
-        // Process batch in parallel
+        // Process batch in parallel with timeout
         const results = await Promise.allSettled(
           batch.map(async (rw) => {
-            const res = await fetch(`/api/classify-wallet/${rw.address}`, { method: 'POST' })
-            if (res.ok) {
-              const data = await res.json()
-              return { address: rw.address, data }
+            const controller = new AbortController()
+            const timeout = setTimeout(() => controller.abort(), 30000) // 30s timeout
+
+            try {
+              console.log('[Auto-classify] Classifying:', rw.address)
+              const res = await fetch(`/api/classify-wallet/${rw.address}`, {
+                method: 'POST',
+                signal: controller.signal
+              })
+              clearTimeout(timeout)
+
+              if (res.ok) {
+                const data = await res.json()
+                console.log('[Auto-classify] Result for', rw.address, ':', data.label, data.is_excluded)
+                return { address: rw.address, data }
+              }
+              console.warn('[Auto-classify] Failed for', rw.address, ':', res.status)
+              return null
+            } catch (err) {
+              clearTimeout(timeout)
+              console.error('[Auto-classify] Error for', rw.address, ':', err.message)
+              return null
             }
-            return null
           })
         )
 
@@ -195,6 +240,7 @@ function App() {
 
         // If any were excluded, refresh the list
         if (hasExcluded && !cancelled) {
+          console.log('[Auto-classify] Some wallets excluded, refreshing list')
           setClassifyingAddrs([])
           await new Promise(r => setTimeout(r, 300))
           if (!cancelled) {
@@ -207,7 +253,10 @@ function App() {
           return // restart with refreshed data
         }
       }
-      if (!cancelled) setClassifyingAddrs([])
+      if (!cancelled) {
+        console.log('[Auto-classify] Batch processing complete')
+        setClassifyingAddrs([])
+      }
     }
 
     classify()

@@ -576,6 +576,7 @@ def classify_wallet_address(address: str, context: str = "") -> dict:
         user_prompt += f"\n\nTransaction context:\n{context}"
 
     try:
+        print(f"[Classify LLM] Calling LLM for {address}...")
         response = call_llm(
             CLASSIFY_SYSTEM_PROMPT,
             user_prompt,
@@ -583,13 +584,17 @@ def classify_wallet_address(address: str, context: str = "") -> dict:
             max_tokens=512,
             plugins=[{"id": "web", "max_results": 3}],
         )
+        print(f"[Classify LLM] LLM response received for {address}")
         # Parse JSON from response (handle possible markdown fencing)
         cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", response.strip())
         json_match = re.search(r"\{[\s\S]*\}", cleaned)
         if json_match:
-            return json.loads(json_match.group())
+            result = json.loads(json_match.group())
+            print(f"[Classify LLM] Parsed result: {result}")
+            return result
+        print(f"[Classify LLM] Failed to parse JSON from response")
     except Exception as e:
-        print(f"Classification failed for {address}: {e}")
+        print(f"[Classify LLM] Classification failed for {address}: {e}")
 
     return {
         "is_excluded": False,
@@ -680,12 +685,15 @@ def remove_excluded_wallet(address: str):
 def classify_wallet(address: str):
     """Classify a wallet address using LLM with web search. Auto-excludes if confident."""
     address = address.lower()
+    print(f"[Classify] Request for {address}")
 
     # Check if already classified (cache hit)
     classified = load_excluded_wallets()
     if address in classified:
+        print(f"[Classify] Cache hit for {address}: {classified[address]['label']}")
         return {"address": address, "cached": True, **classified[address]}
 
+    print(f"[Classify] Cache miss, calling LLM for {address}")
     # Build context and classify
     context = build_classification_context(address)
     classification = classify_wallet_address(address, context)
@@ -705,6 +713,7 @@ def classify_wallet(address: str):
     }
     save_excluded_wallets(classified)
 
+    print(f"[Classify] Classified {address} as {classified[address]['label']} (excluded: {is_excluded})")
     return {"address": address, "cached": False, **classified[address]}
 
 
@@ -1007,8 +1016,11 @@ def get_related_wallets(wallet: str):
 
     # Filter out excluded wallets and attach classification data
     classified = load_excluded_wallets()
+    print(f"[Related] Wallet {wallet}: found {len(related)} related, {len(classified)} in cache")
+
     filtered_related = []
     excluded_in_results = []
+    cached_count = 0
     for rw in related:
         entry = classified.get(rw["address"])
         if entry and entry.get("is_excluded", False):
@@ -1017,7 +1029,10 @@ def get_related_wallets(wallet: str):
             # Attach classification if cached (even for non-excluded)
             if entry:
                 rw["classification"] = entry
+                cached_count += 1
             filtered_related.append(rw)
+
+    print(f"[Related] Returning {len(filtered_related)} related ({cached_count} with classification), {len(excluded_in_results)} excluded")
 
     return {
         "wallet": wallet,
