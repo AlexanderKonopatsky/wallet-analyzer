@@ -4,6 +4,11 @@ import WalletSidebar from './components/WalletSidebar'
 import ReportView from './components/ReportView'
 import ProfileView from './components/ProfileView'
 
+function countSections(markdown) {
+  if (!markdown) return 0
+  return (markdown.match(/^### /gm) || []).length
+}
+
 function App() {
   const [wallets, setWallets] = useState([])
   const [selectedWallet, setSelectedWallet] = useState('')
@@ -17,6 +22,56 @@ function App() {
   const [activeView, setActiveView] = useState('report') // 'report' | 'profile'
   const [profile, setProfile] = useState(null)
   const [profileLoading, setProfileLoading] = useState(false)
+
+  // Track which sections are NEW (by original index in markdown)
+  const [oldSectionCount, setOldSectionCount] = useState(null)
+
+  // localStorage helpers for tracking viewed reports
+  const getViewedTxCount = useCallback((walletAddr) => {
+    try {
+      const key = `wallet_viewed_${walletAddr.toLowerCase()}`
+      const data = localStorage.getItem(key)
+      return data ? JSON.parse(data).tx_count : 0
+    } catch {
+      return 0
+    }
+  }, [])
+
+  const checkHasNewData = useCallback((wallet) => {
+    const currentTxCount = wallet.tx_count || 0
+    const viewedTxCount = getViewedTxCount(wallet.address)
+    return currentTxCount > viewedTxCount && wallet.has_report
+  }, [getViewedTxCount])
+
+  // Process report data: determine NEW sections, update localStorage, remove green dot
+  const processReportData = useCallback((wallet, data) => {
+    const key = `wallet_viewed_${wallet.toLowerCase()}`
+    const oldRaw = localStorage.getItem(key)
+    const oldState = oldRaw ? JSON.parse(oldRaw) : null
+    const oldTxCount = oldState?.tx_count || 0
+    const storedSectionCount = oldState?.section_count
+
+    // Show NEW badges only if: tx_count increased AND we have stored section_count
+    if (data.tx_count > oldTxCount && oldState !== null && storedSectionCount !== undefined) {
+      setOldSectionCount(storedSectionCount)
+    } else {
+      setOldSectionCount(null)
+    }
+
+    // Update localStorage with current state
+    localStorage.setItem(key, JSON.stringify({
+      tx_count: data.tx_count,
+      last_viewed: new Date().toISOString(),
+      section_count: countSections(data.markdown)
+    }))
+
+    // Remove green dot
+    setWallets(prev => prev.map(w =>
+      w.address.toLowerCase() === wallet.toLowerCase()
+        ? { ...w, has_new_data: false }
+        : w
+    ))
+  }, [])
 
 
   // Cleanup poll interval on unmount
@@ -35,7 +90,24 @@ function App() {
       fetch('/api/active-tasks').then(res => res.json())
     ])
       .then(([walletsData, activeTasks]) => {
-        setWallets(walletsData)
+        // Initialize localStorage for wallets that don't have it (first time load)
+        walletsData.forEach(w => {
+          const key = `wallet_viewed_${w.address.toLowerCase()}`
+          if (!localStorage.getItem(key) && w.has_report) {
+            // First time - mark as already viewed with current tx_count
+            localStorage.setItem(key, JSON.stringify({
+              tx_count: w.tx_count,
+              last_viewed: new Date().toISOString()
+            }))
+          }
+        })
+
+        // Enrich wallets with has_new_data flag
+        const enrichedWallets = walletsData.map(w => ({
+          ...w,
+          has_new_data: checkHasNewData(w)
+        }))
+        setWallets(enrichedWallets)
 
         // If there's an active task and no wallet is selected, auto-select it
         const activeWallets = Object.keys(activeTasks)
@@ -55,11 +127,17 @@ function App() {
   const refreshWallets = useCallback(async () => {
     try {
       const walletsRes = await fetch('/api/wallets')
-      setWallets(await walletsRes.json())
+      const walletsData = await walletsRes.json()
+      // Enrich wallets with has_new_data flag
+      const enrichedWallets = walletsData.map(w => ({
+        ...w,
+        has_new_data: checkHasNewData(w)
+      }))
+      setWallets(enrichedWallets)
     } catch (err) {
       console.error('Failed to refresh wallets:', err)
     }
-  }, [])
+  }, [checkHasNewData])
 
   const saveTag = useCallback(async (wallet, tag) => {
     try {
@@ -90,13 +168,14 @@ function App() {
       if (!res.ok) throw new Error('Failed to load report')
       const data = await res.json()
       setReport(data)
+      processReportData(wallet, data)
     } catch (err) {
       setError(err.message)
       setReport(null)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [processReportData])
 
   const loadProfile = useCallback(async (wallet, forceRegenerate = false) => {
     if (!wallet) return
@@ -147,8 +226,7 @@ function App() {
           setPollInterval(null)
           if (statusData.status === 'done') {
             await loadReport(wallet)
-            const walletsRes = await fetch('/api/wallets')
-            setWallets(await walletsRes.json())
+            await refreshWallets()
           }
           if (statusData.status === 'error') {
             setError(statusData.detail)
@@ -163,7 +241,7 @@ function App() {
     }, 2000)
 
     setPollInterval(poll)
-  }, [loadReport, pollInterval])
+  }, [loadReport, refreshWallets, pollInterval])
 
   const startRefresh = useCallback(async (wallet) => {
     if (!wallet) return
@@ -187,6 +265,58 @@ function App() {
     }
   }, [startMonitoring])
 
+  const startBulkRefresh = useCallback(async (categoryId = 'all') => {
+    setError(null)
+
+    try {
+      const res = await fetch('/api/refresh-bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category_id: categoryId })
+      })
+      const data = await res.json()
+
+      if (data.status === 'started') {
+        setRefreshStatus({
+          status: 'fetching',
+          detail: `Обновление ${data.started.length} кошельков...`
+        })
+
+        // Start polling for all wallets status
+        const pollBulk = setInterval(async () => {
+          try {
+            const activeRes = await fetch('/api/active-tasks')
+            const activeTasks = await activeRes.json()
+
+            if (Object.keys(activeTasks).length === 0) {
+              // All done
+              clearInterval(pollBulk)
+              setRefreshStatus({ status: 'done', detail: 'Все обновления завершены' })
+              await refreshWallets()
+              setTimeout(() => setRefreshStatus(null), 3000)
+            } else {
+              // Still running
+              const count = Object.keys(activeTasks).length
+              setRefreshStatus({
+                status: 'analyzing',
+                detail: `Обновляется ${count} кошельков...`
+              })
+            }
+          } catch (err) {
+            clearInterval(pollBulk)
+            setRefreshStatus(null)
+          }
+        }, 3000)
+      } else if (data.status === 'no_wallets') {
+        setRefreshStatus({ status: 'error', detail: 'Нет кошельков для обновления' })
+        setTimeout(() => setRefreshStatus(null), 3000)
+      }
+    } catch (err) {
+      setError(err.message)
+      setRefreshStatus(null)
+    }
+  }, [refreshWallets])
+
   const handleSelect = useCallback(async (wallet) => {
     setSelectedWallet(wallet)
     setReport(null)
@@ -194,6 +324,7 @@ function App() {
     setRefreshStatus(null)
     setActiveView('report')
     setProfile(null)
+    setOldSectionCount(null)
 
     if (wallet) {
       // Try to load existing report
@@ -210,6 +341,7 @@ function App() {
         } else {
           const data = await res.json()
           setReport(data)
+          processReportData(wallet, data)
           setLoading(false)
         }
       } catch (err) {
@@ -218,7 +350,7 @@ function App() {
         setLoading(false)
       }
     }
-  }, [startRefresh])
+  }, [startRefresh, processReportData])
 
   const isRefreshing = refreshStatus &&
     (refreshStatus.status === 'fetching' || refreshStatus.status === 'analyzing')
@@ -236,6 +368,7 @@ function App() {
           onSelect={handleSelect}
           onSaveTag={saveTag}
           onRefresh={refreshWallets}
+          onBulkRefresh={startBulkRefresh}
           onAction={(wallet, actionId) => {
             if (actionId === 'profile') {
               loadProfile(wallet)
@@ -282,6 +415,7 @@ function App() {
               loading={loading}
               walletTag={currentTag}
               walletAddress={selectedWallet}
+              oldSectionCount={oldSectionCount}
             />
           )}
         </div>

@@ -33,9 +33,10 @@ function parseReport(markdown) {
 
   if (currentSection) sections.push(currentSection)
 
-  sections.forEach(s => {
+  sections.forEach((s, i) => {
     const m = s.date.match(/\d{4}-\d{2}-\d{2}/)
     s._sortDate = m ? m[0] : ''
+    s._originalIndex = i
   })
   sections.sort((a, b) => b._sortDate.localeCompare(a._sortDate))
 
@@ -84,7 +85,7 @@ const TxRow = memo(function TxRow({ tx }) {
   )
 })
 
-const DayCard = memo(function DayCard({ date, content, walletAddress }) {
+const DayCard = memo(function DayCard({ date, content, walletAddress, isNew }) {
   const [expanded, setExpanded] = useState(false)
   const [txs, setTxs] = useState(null)
   const [txLoading, setTxLoading] = useState(false)
@@ -166,7 +167,10 @@ const DayCard = memo(function DayCard({ date, content, walletAddress }) {
   return (
     <div className="day-card" ref={cardRef}>
       <div className="day-card-header">
-        <span>{date}</span>
+        <span>
+          {date}
+          {isNew && <span className="new-badge" title="Новые данные">✨ NEW</span>}
+        </span>
         {walletAddress && dateMatches.length > 0 && (
           <button
             className={`tx-toggle-btn ${expanded ? 'tx-toggle-expanded' : ''}`}
@@ -199,7 +203,7 @@ const DayCard = memo(function DayCard({ date, content, walletAddress }) {
   )
 })
 
-function ReportView({ report, loading, walletTag, walletAddress }) {
+function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount }) {
   const { summary, sections } = useMemo(
     () => parseReport(report?.markdown),
     [report?.markdown]
@@ -259,6 +263,7 @@ function ReportView({ report, loading, walletTag, walletAddress }) {
             date={section.date}
             content={section.content}
             walletAddress={walletAddress}
+            isNew={oldSectionCount !== null && section._originalIndex >= oldSectionCount}
           />
         ))}
       </div>

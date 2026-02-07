@@ -43,6 +43,7 @@ from categories import (
     get_wallet_category,
     set_wallet_category,
     get_category_stats,
+    get_wallets_by_category,
 )
 
 CHAIN_EXPLORERS = {
@@ -669,6 +670,64 @@ def start_refresh(wallet: str):
     active_threads[wallet_lower] = thread
 
     return {"status": "started"}
+
+
+@app.post("/api/refresh-bulk")
+async def start_bulk_refresh(request: Request):
+    """Start refresh for multiple wallets (all or by category)."""
+    body = await request.json()
+    category_id = body.get("category_id")  # None for all, string for specific category
+
+    # Get list of wallets to refresh
+    if category_id == "all" or category_id is None:
+        # Get all wallets
+        tags = load_wallet_tags()
+        wallets = []
+        if DATA_DIR.exists():
+            for filepath in sorted(DATA_DIR.glob("*.json")):
+                if filepath.name in ("wallet_tags.json", "categories.json", "refresh_status.json"):
+                    continue
+                wallets.append(filepath.stem)
+    else:
+        # Get wallets in specific category
+        wallets = get_wallets_by_category(category_id)
+
+    if not wallets:
+        return {"status": "no_wallets", "started": []}
+
+    # Start refresh for each wallet (if not already running)
+    started = []
+    already_running = []
+
+    for wallet in wallets:
+        wallet_lower = wallet.lower()
+
+        # Check if thread is already running
+        existing_thread = active_threads.get(wallet_lower)
+        if existing_thread and existing_thread.is_alive():
+            already_running.append(wallet_lower)
+            continue
+
+        # Check status from disk
+        current = refresh_tasks.get(wallet_lower, {})
+        if current.get("status") in ("fetching", "analyzing"):
+            # Status says running but no thread - might be stale, start new one
+            pass
+
+        refresh_tasks[wallet_lower] = {"status": "fetching", "detail": "Starting..."}
+        save_refresh_status(refresh_tasks)
+
+        thread = threading.Thread(target=background_refresh, args=(wallet,), daemon=False)
+        thread.start()
+        active_threads[wallet_lower] = thread
+        started.append(wallet_lower)
+
+    return {
+        "status": "started",
+        "started": started,
+        "already_running": already_running,
+        "total": len(wallets)
+    }
 
 
 @app.get("/api/refresh-status/{wallet}")

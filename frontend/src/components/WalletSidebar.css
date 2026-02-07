@@ -253,12 +253,33 @@
   color: #e6edf3;
 }
 
+.bulk-refresh-btn {
+  margin-top: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: #1f6feb;
+  border: 1px solid #1f6feb;
+  border-radius: 6px;
+  color: #ffffff;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.bulk-refresh-btn:hover {
+  background: #1a5cd7;
+  border-color: #1a5cd7;
+}
+
 /* Category section */
 .category-section {
   margin-bottom: 12px;
 }
 
 .category-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   padding: 8px 14px;
   cursor: pointer;
   transition: background 0.15s;
@@ -307,6 +328,24 @@
 .category-count {
   font-size: 0.75rem;
   color: #484f58;
+}
+
+.category-refresh-btn {
+  padding: 4px 8px;
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  color: #8b949e;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.15s;
+  opacity: 0.6;
+}
+
+.category-refresh-btn:hover {
+  background: #30363d;
+  color: #58a6ff;
+  opacity: 1;
 }
 
 .category-wallets {

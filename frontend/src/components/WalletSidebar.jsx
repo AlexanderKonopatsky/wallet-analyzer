@@ -7,7 +7,7 @@ const WALLET_ACTIONS = [
   { id: 'profile', label: 'Профиль' },
 ]
 
-function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag, onRefresh }) {
+function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag, onRefresh, onBulkRefresh }) {
   const [inputValue, setInputValue] = useState('')
   const [editingAddr, setEditingAddr] = useState(null)
   const [tagValue, setTagValue] = useState('')
@@ -290,7 +290,7 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
               }}
             >+ Добавить имя</span>
           )}
-          {w.has_report && <span className="wallet-card-badge" title="Есть отчёт" />}
+          {w.has_new_data && <span className="wallet-card-badge" title="Новые данные" />}
         </div>
         <div className="wallet-card-bottom">
           <span className="wallet-card-address">{shortAddr(w.address)}</span>
@@ -338,6 +338,13 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
         <button className="category-add-btn" onClick={handleAddCategory}>
           ➕ Добавить категорию
         </button>
+        <button
+          className="bulk-refresh-btn"
+          onClick={() => onBulkRefresh?.('all')}
+          title="Обновить все кошельки"
+        >
+          🔄 Обновить все
+        </button>
       </div>
 
       <div className="wallet-list">
@@ -370,6 +377,16 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
                   <span className="category-name">{cat.name}</span>
                   <span className="category-count">({categoryWallets.length})</span>
                 </div>
+                <button
+                  className="category-refresh-btn"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onBulkRefresh?.(cat.id)
+                  }}
+                  title="Обновить все кошельки в категории"
+                >
+                  🔄
+                </button>
               </div>
 
               {isExpanded && (
