@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import './App.css'
-import WalletInput from './components/WalletInput'
+import WalletSidebar from './components/WalletSidebar'
 import ReportView from './components/ReportView'
 
 function App() {
@@ -11,6 +11,10 @@ function App() {
   const [error, setError] = useState(null)
   const [refreshStatus, setRefreshStatus] = useState(null)
 
+  // Tag editing
+  const [editingTag, setEditingTag] = useState(false)
+  const [tagValue, setTagValue] = useState('')
+
   // Fetch list of tracked wallets
   useEffect(() => {
     fetch('/api/wallets')
@@ -18,6 +22,9 @@ function App() {
       .then(setWallets)
       .catch(() => {})
   }, [])
+
+  const currentWallet = wallets.find(w => w.address.toLowerCase() === selectedWallet)
+  const currentTag = currentWallet?.tag || ''
 
   const saveTag = useCallback(async (wallet, tag) => {
     try {
@@ -42,7 +49,7 @@ function App() {
       const res = await fetch(`/api/report/${wallet.toLowerCase()}`)
       if (res.status === 404) {
         setReport(null)
-        setError('No report found. Click "Refresh Data" to fetch and analyze transactions.')
+        setError('Отчёт не найден. Нажмите «Обновить данные» для загрузки и анализа транзакций.')
         return
       }
       if (!res.ok) throw new Error('Failed to load report')
@@ -80,7 +87,6 @@ function App() {
           if (statusData.status === 'done' || statusData.status === 'error') {
             clearInterval(poll)
             if (statusData.status === 'done') {
-              // Reload report and wallet list
               await loadReport(wallet)
               const walletsRes = await fetch('/api/wallets')
               setWallets(await walletsRes.json())
@@ -88,7 +94,6 @@ function App() {
             if (statusData.status === 'error') {
               setError(statusData.detail)
             }
-            // Clear status after a delay
             setTimeout(() => setRefreshStatus(null), 3000)
           }
         } catch {
@@ -107,7 +112,28 @@ function App() {
     setReport(null)
     setError(null)
     setRefreshStatus(null)
+    setEditingTag(false)
     if (wallet) loadReport(wallet)
+  }
+
+  const isRefreshing = refreshStatus &&
+    (refreshStatus.status === 'fetching' || refreshStatus.status === 'analyzing')
+
+  const startEditTag = () => {
+    setTagValue(currentTag)
+    setEditingTag(true)
+  }
+
+  const handleSaveTag = () => {
+    if (selectedWallet) {
+      saveTag(selectedWallet, tagValue.trim())
+    }
+    setEditingTag(false)
+  }
+
+  const handleTagKeyDown = (e) => {
+    if (e.key === 'Enter') handleSaveTag()
+    if (e.key === 'Escape') setEditingTag(false)
   }
 
   return (
@@ -116,22 +142,75 @@ function App() {
         <h1><span>DeFi</span> Wallet Monitor</h1>
       </header>
 
-      <WalletInput
-        wallets={wallets}
-        selectedWallet={selectedWallet}
-        onSelect={handleSelect}
-        onRefresh={startRefresh}
-        refreshStatus={refreshStatus}
-        onSaveTag={saveTag}
-      />
+      <div className="app-layout">
+        <WalletSidebar
+          wallets={wallets}
+          selectedWallet={selectedWallet}
+          onSelect={handleSelect}
+          onSaveTag={saveTag}
+          onAction={(wallet, actionId) => {
+            console.log('wallet action:', actionId, wallet)
+          }}
+        />
 
-      {error && <div className="error-banner">{error}</div>}
+        <div className="app-content">
+          {selectedWallet && (
+            <div className="wallet-toolbar">
+              <div className="toolbar-left">
+                {!editingTag ? (
+                  currentTag ? (
+                    <span className="toolbar-tag" onClick={startEditTag}>{currentTag}</span>
+                  ) : (
+                    <span className="toolbar-tag-empty" onClick={startEditTag}>+ Добавить имя</span>
+                  )
+                ) : (
+                  <div className="toolbar-tag-edit">
+                    <input
+                      type="text"
+                      className="toolbar-tag-input"
+                      value={tagValue}
+                      onChange={e => setTagValue(e.target.value)}
+                      onKeyDown={handleTagKeyDown}
+                      placeholder="Имя кошелька..."
+                      autoFocus
+                      maxLength={50}
+                    />
+                    <button className="btn btn-tag-save" onClick={handleSaveTag}>Сохранить</button>
+                    <button className="btn btn-tag-cancel" onClick={() => setEditingTag(false)}>Отмена</button>
+                  </div>
+                )}
+              </div>
 
-      <ReportView
-        report={report}
-        loading={loading}
-        walletTag={wallets.find(w => w.address.toLowerCase() === selectedWallet)?.tag || ''}
-      />
+              <div className="toolbar-right">
+                <button
+                  className="btn btn-refresh"
+                  onClick={() => startRefresh(selectedWallet)}
+                  disabled={isRefreshing}
+                >
+                  {isRefreshing ? 'Обновление...' : 'Обновить данные'}
+                </button>
+                {refreshStatus && (
+                  <span className={`refresh-status status-${refreshStatus.status}`}>
+                    {refreshStatus.status === 'fetching' && '● Загрузка транзакций...'}
+                    {refreshStatus.status === 'analyzing' && '● AI-анализ...'}
+                    {refreshStatus.status === 'done' && '✓ Готово!'}
+                    {refreshStatus.status === 'error' && '✗ Ошибка'}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {error && <div className="error-banner">{error}</div>}
+
+          <ReportView
+            report={report}
+            loading={loading}
+            walletTag={currentTag}
+            walletAddress={selectedWallet}
+          />
+        </div>
+      </div>
     </div>
   )
 }

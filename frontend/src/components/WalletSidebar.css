@@ -1,0 +1,235 @@
+.wallet-sidebar {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 80px);
+  border-right: 1px solid #30363d;
+  background: #0d1117;
+}
+
+.sidebar-header {
+  padding: 16px 14px 12px;
+  border-bottom: 1px solid #30363d;
+}
+
+.sidebar-add {
+  display: flex;
+  gap: 8px;
+}
+
+.sidebar-input {
+  flex: 1;
+  padding: 8px 10px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  color: #e6edf3;
+  font-size: 0.8rem;
+  font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+}
+
+.sidebar-input::placeholder {
+  color: #484f58;
+}
+
+.sidebar-input:focus {
+  border-color: #58a6ff;
+  outline: none;
+}
+
+.sidebar-add-btn {
+  padding: 8px 12px;
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  color: #e6edf3;
+  font-size: 0.8rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.sidebar-add-btn:hover:not(:disabled) {
+  background: #30363d;
+}
+
+.sidebar-add-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Wallet list */
+.wallet-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+.wallet-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.wallet-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.wallet-list::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 3px;
+}
+
+.wallet-list::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
+}
+
+/* Wallet card */
+.wallet-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 14px;
+  margin: 0 8px 4px;
+  border-radius: 8px;
+  border-left: 3px solid transparent;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.wallet-card:hover {
+  background: #161b22;
+}
+
+.wallet-card.active {
+  background: #161b22;
+  border-left-color: #58a6ff;
+}
+
+.wallet-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.wallet-card-tag {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #e6edf3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wallet-card-notag {
+  font-size: 0.8rem;
+  color: #484f58;
+  font-style: italic;
+}
+
+.wallet-card-notag--clickable {
+  cursor: pointer;
+  font-style: normal;
+  transition: color 0.15s;
+}
+
+.wallet-card-notag--clickable:hover {
+  color: #8b949e;
+}
+
+/* Inline tag editing */
+.wallet-card-tag-edit {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+
+.wallet-card-tag-input {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  background: #0d1117;
+  border: 1px solid #58a6ff;
+  border-radius: 4px;
+  color: #e6edf3;
+  font-size: 0.8rem;
+  outline: none;
+}
+
+.wallet-card-tag-input::placeholder {
+  color: #484f58;
+}
+
+.wallet-card-tag-save {
+  padding: 2px 6px;
+  background: #238636;
+  border: none;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 0.75rem;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.wallet-card-tag-save:hover {
+  background: #2ea043;
+}
+
+.wallet-card-badge {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #3fb950;
+  title: "Has report";
+}
+
+.wallet-card-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.wallet-card-address {
+  font-size: 0.75rem;
+  color: #8b949e;
+  font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+}
+
+.wallet-card-txcount {
+  font-size: 0.7rem;
+  color: #484f58;
+  white-space: nowrap;
+}
+
+/* Wallet card action buttons */
+.wallet-card-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.wallet-action-btn {
+  padding: 3px 8px;
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  color: #8b949e;
+  font-size: 0.675rem;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.wallet-action-btn:hover {
+  background: #30363d;
+  color: #e6edf3;
+}
+
+/* Empty state */
+.wallet-list-empty {
+  padding: 24px 14px;
+  text-align: center;
+  color: #484f58;
+  font-size: 0.825rem;
+}

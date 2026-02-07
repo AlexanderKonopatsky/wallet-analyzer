@@ -8,7 +8,7 @@ from pathlib import Path
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from main import fetch_all_transactions, load_existing_data, save_data
@@ -22,12 +22,38 @@ from analyze import (
     group_by_days,
     make_chunks,
     format_tx_for_llm,
+    fmt_amount,
+    fmt_usd,
+    fmt_ts,
+    ts_to_date,
     call_llm,
     parse_llm_response,
     extract_day_summaries,
     SYSTEM_PROMPT,
     FULL_CHRONOLOGY_COUNT,
 )
+
+CHAIN_EXPLORERS = {
+    "ethereum": "https://etherscan.io/tx/",
+    "arbitrum": "https://arbiscan.io/tx/",
+    "optimism": "https://optimistic.etherscan.io/tx/",
+    "polygon": "https://polygonscan.com/tx/",
+    "base": "https://basescan.org/tx/",
+    "blast": "https://blastscan.io/tx/",
+    "bsc": "https://bscscan.com/tx/",
+    "avalanche": "https://snowtrace.io/tx/",
+    "fantom": "https://ftmscan.com/tx/",
+    "linea": "https://lineascan.build/tx/",
+    "zksync": "https://explorer.zksync.io/tx/",
+    "scroll": "https://scrollscan.com/tx/",
+    "mantle": "https://explorer.mantle.xyz/tx/",
+    "gnosis": "https://gnosisscan.io/tx/",
+    "celo": "https://celoscan.io/tx/",
+    "zora": "https://explorer.zora.energy/tx/",
+    "mode": "https://explorer.mode.network/tx/",
+    "manta": "https://pacific-explorer.manta.network/tx/",
+    "solana": "https://solscan.io/tx/",
+}
 
 app = FastAPI()
 
@@ -240,9 +266,10 @@ def get_tags():
 
 
 @app.put("/api/tags/{wallet}")
-def set_tag(wallet: str, body: dict):
+async def set_tag(wallet: str, request: Request):
     """Set tag/name for a wallet."""
     wallet_lower = wallet.lower()
+    body = await request.json()
     tag = body.get("tag", "").strip()
     tags = load_wallet_tags()
     if tag:
@@ -271,6 +298,136 @@ def get_report(wallet: str):
         "tx_count": meta["tx_count"] if meta else 0,
         "address": meta["address"] if meta else wallet,
     }
+
+
+def format_tx_for_frontend(tx: dict) -> dict:
+    """Format a transaction for display in the frontend."""
+    tx_type = tx.get("tx_type", "?")
+    chain = tx.get("chain", "?")
+    tx_hash = tx.get("tx_hash", "")
+    timestamp = tx.get("timestamp", 0)
+
+    explorer_base = CHAIN_EXPLORERS.get(chain, "")
+    explorer_url = f"{explorer_base}{tx_hash}" if explorer_base and tx_hash else ""
+
+    result = {
+        "tx_hash": tx_hash,
+        "tx_type": tx_type,
+        "chain": chain,
+        "timestamp": timestamp,
+        "time": fmt_ts(timestamp),
+        "explorer_url": explorer_url,
+    }
+
+    if tx_type == "swap":
+        result["description"] = (
+            f"Swap {fmt_amount(tx.get('token0_amount', 0))} {tx.get('token0_symbol', '?')} "
+            f"→ {fmt_amount(tx.get('token1_amount', 0))} {tx.get('token1_symbol', '?')}"
+        )
+        result["usd"] = fmt_usd(max(
+            tx.get("token0_amount_usd", 0) or 0,
+            tx.get("token1_amount_usd", 0) or 0,
+        ))
+        result["platform"] = tx.get("dex", "") or ""
+    elif tx_type == "lending":
+        action = tx.get("action", "?")
+        result["description"] = f"{action} {fmt_amount(tx.get('amount', 0))} {tx.get('symbol', '?')}"
+        result["usd"] = fmt_usd(tx.get("amount_usd", 0) or 0)
+        result["platform"] = tx.get("platform", "") or ""
+    elif tx_type == "transfer":
+        sym = tx.get("symbol", tx.get("token_symbol", "?"))
+        amt = tx.get("amount", tx.get("token_amount", 0))
+        usd = tx.get("amount_usd", tx.get("token_amount_usd", 0)) or 0
+        from_label = tx.get("from_label", "") or ""
+        to_label = tx.get("to_label", "") or ""
+        frm = tx.get("from", "")
+        to = tx.get("to", "")
+        if not from_label and frm:
+            from_label = f"{frm[:6]}…{frm[-4:]}"
+        if not to_label and to:
+            to_label = f"{to[:6]}…{to[-4:]}"
+        result["description"] = f"Transfer {fmt_amount(amt)} {sym}: {from_label} → {to_label}"
+        result["usd"] = fmt_usd(usd)
+        result["platform"] = ""
+    elif tx_type == "lp":
+        lp_type = tx.get("type", "?")
+        result["description"] = (
+            f"LP {lp_type} {fmt_amount(tx.get('token0_amount', 0))} {tx.get('token0_symbol', '?')} "
+            f"+ {fmt_amount(tx.get('token1_amount', 0))} {tx.get('token1_symbol', '?')}"
+        )
+        result["usd"] = fmt_usd(
+            (tx.get("token0_amount_usd", 0) or 0) + (tx.get("token1_amount_usd", 0) or 0)
+        )
+        result["platform"] = tx.get("dex", "") or ""
+    elif tx_type == "bridge":
+        from_chain = tx.get("from_chain", "?") or "?"
+        to_chain = tx.get("to_chain", "?") or "?"
+        result["description"] = (
+            f"Bridge {fmt_amount(tx.get('amount', 0))} {tx.get('token_symbol', '?')} "
+            f"{from_chain} → {to_chain}"
+        )
+        result["usd"] = fmt_usd(tx.get("amount_usd", 0) or 0)
+        result["platform"] = tx.get("platform", "") or ""
+    elif tx_type == "wrap":
+        action = tx.get("action", "?")
+        result["description"] = f"{action} {fmt_amount(tx.get('amount', 0))} {tx.get('symbol', '?')}"
+        result["usd"] = fmt_usd(tx.get("amount_usd", 0) or 0)
+        result["platform"] = ""
+    elif tx_type == "nft_transfer":
+        name = tx.get("nft_name", "?")
+        token_id = tx.get("nft_token_id", "?")
+        result["description"] = f"NFT {name} #{token_id}"
+        result["usd"] = ""
+        result["platform"] = ""
+    else:
+        result["description"] = tx_type.upper()
+        result["usd"] = ""
+        result["platform"] = ""
+
+    return result
+
+
+@app.get("/api/tx-counts/{wallet}")
+def get_tx_counts(wallet: str):
+    """Get transaction counts per day (lightweight, no formatting)."""
+    wallet = wallet.lower()
+    raw_txs = load_transactions(wallet)
+    if not raw_txs:
+        raise HTTPException(status_code=404, detail="No transaction data found")
+
+    txs = filter_transactions(raw_txs)
+    day_groups = group_by_days(txs)
+
+    return {day: len(day_txs) for day, day_txs in day_groups.items()}
+
+
+@app.get("/api/transactions/{wallet}")
+def get_transactions(wallet: str, date_from: str = None, date_to: str = None):
+    """Get wallet transactions, optionally filtered by date range."""
+    wallet = wallet.lower()
+    raw_txs = load_transactions(wallet)
+    if not raw_txs:
+        raise HTTPException(status_code=404, detail="No transaction data found")
+
+    txs = filter_transactions(raw_txs)
+    day_groups = group_by_days(txs)
+
+    # Filter by date range if provided
+    if date_from or date_to:
+        filtered = {}
+        for day, day_txs in day_groups.items():
+            if date_from and day < date_from:
+                continue
+            if date_to and day > date_to:
+                continue
+            filtered[day] = day_txs
+        day_groups = filtered
+
+    result = {}
+    for day, day_txs in day_groups.items():
+        result[day] = [format_tx_for_frontend(tx) for tx in day_txs]
+
+    return result
 
 
 @app.post("/api/refresh/{wallet}")

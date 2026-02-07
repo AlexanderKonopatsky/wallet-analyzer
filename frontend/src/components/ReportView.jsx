@@ -1,3 +1,4 @@
+import { useState, useMemo, memo, useCallback, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 import './ReportView.css'
 
@@ -11,13 +12,11 @@ function parseReport(markdown) {
   let pastTitle = false
 
   for (const line of lines) {
-    // Skip the main title
     if (line.startsWith('# ') && !pastTitle) {
       pastTitle = true
       continue
     }
 
-    // Day header
     const dateMatch = line.match(/^### (.+)/)
     if (dateMatch) {
       if (currentSection) sections.push(currentSection)
@@ -34,50 +33,178 @@ function parseReport(markdown) {
 
   if (currentSection) sections.push(currentSection)
 
-  // Sort by date descending (newest first)
-  // Handles dates like "2024-10-13" and ranges like "2024-10-12 — 2024-12-11"
-  sections.sort((a, b) => {
-    const dateA = a.date.match(/\d{4}-\d{2}-\d{2}/)
-    const dateB = b.date.match(/\d{4}-\d{2}-\d{2}/)
-    if (!dateA || !dateB) return 0
-    return dateB[0].localeCompare(dateA[0])
+  sections.forEach(s => {
+    const m = s.date.match(/\d{4}-\d{2}-\d{2}/)
+    s._sortDate = m ? m[0] : ''
   })
+  sections.sort((a, b) => b._sortDate.localeCompare(a._sortDate))
 
   return { summary: summary.trim(), sections }
 }
 
-function DayCard({ date, content }) {
-  // Split content to highlight "Суть дня/периода" line
-  const lines = content.trim().split('\n')
-  const summaryIdx = lines.findIndex(l =>
-    l.match(/\*\*Суть (дня|периода):\*\*/)
-  )
+const TX_PAGE_SIZE = 50
 
-  let mainContent, daySummary
-  if (summaryIdx >= 0) {
-    daySummary = lines[summaryIdx]
-    mainContent = [...lines.slice(0, summaryIdx), ...lines.slice(summaryIdx + 1)].join('\n').trim()
-  } else {
-    mainContent = content.trim()
-    daySummary = null
-  }
+const TX_TYPE_LABELS = {
+  swap: 'Swap',
+  lending: 'Lending',
+  transfer: 'Transfer',
+  lp: 'LP',
+  bridge: 'Bridge',
+  wrap: 'Wrap',
+  nft_transfer: 'NFT',
+}
+
+const TxRow = memo(function TxRow({ tx }) {
+  const typeLabel = TX_TYPE_LABELS[tx.tx_type] || tx.tx_type
 
   return (
-    <div className="day-card">
-      <div className="day-card-header">{date}</div>
-      <div className="day-card-body">
-        <ReactMarkdown>{mainContent}</ReactMarkdown>
-        {daySummary && (
-          <div className="day-summary">
-            <ReactMarkdown>{daySummary}</ReactMarkdown>
-          </div>
+    <div className="tx-row">
+      <div className="tx-row-main">
+        <span className={`tx-type tx-type-${tx.tx_type}`}>{typeLabel}</span>
+        <span className="tx-chain">{tx.chain}</span>
+        <span className="tx-desc">{tx.description}</span>
+        {tx.usd && <span className="tx-usd">{tx.usd}</span>}
+        {tx.platform && <span className="tx-platform">{tx.platform}</span>}
+      </div>
+      <div className="tx-row-meta">
+        <span className="tx-time">{tx.time}</span>
+        {tx.explorer_url && (
+          <a
+            className="tx-link"
+            href={tx.explorer_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={tx.tx_hash}
+          >
+            {tx.tx_hash.slice(0, 10)}…
+          </a>
         )}
       </div>
     </div>
   )
-}
+})
 
-function ReportView({ report, loading, walletTag }) {
+const DayCard = memo(function DayCard({ date, content, walletAddress }) {
+  const [expanded, setExpanded] = useState(false)
+  const [txs, setTxs] = useState(null)
+  const [txLoading, setTxLoading] = useState(false)
+  const [txVisible, setTxVisible] = useState(TX_PAGE_SIZE)
+  const [wasVisible, setWasVisible] = useState(false)
+  const cardRef = useRef(null)
+
+  useEffect(() => {
+    const el = cardRef.current
+    if (!el || wasVisible) return
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setWasVisible(true)
+          observer.disconnect()
+        }
+      },
+      { rootMargin: '200px' }
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [wasVisible])
+
+  const { mainContent, daySummary } = useMemo(() => {
+    const lines = content.trim().split('\n')
+    const summaryIdx = lines.findIndex(l =>
+      l.match(/\*\*Суть (дня|периода):\*\*/)
+    )
+
+    if (summaryIdx >= 0) {
+      return {
+        daySummary: lines[summaryIdx],
+        mainContent: [...lines.slice(0, summaryIdx), ...lines.slice(summaryIdx + 1)].join('\n').trim(),
+      }
+    }
+    return { mainContent: content.trim(), daySummary: null }
+  }, [content])
+
+  const dateMatches = useMemo(() => date.match(/\d{4}-\d{2}-\d{2}/g) || [], [date])
+
+  const renderedBody = useMemo(() => (
+    <div className="day-card-body">
+      <ReactMarkdown>{mainContent}</ReactMarkdown>
+      {daySummary && (
+        <div className="day-summary">
+          <ReactMarkdown>{daySummary}</ReactMarkdown>
+        </div>
+      )}
+    </div>
+  ), [mainContent, daySummary])
+
+  const handleToggle = useCallback(() => {
+    if (!expanded && !txs && walletAddress && dateMatches.length > 0) {
+      setTxLoading(true)
+      const dateFrom = dateMatches[0]
+      const dateTo = dateMatches.length > 1 ? dateMatches[1] : dateFrom
+      fetch(`/api/transactions/${walletAddress}?date_from=${dateFrom}&date_to=${dateTo}`)
+        .then(res => res.ok ? res.json() : null)
+        .then(data => {
+          if (data) {
+            const all = Object.values(data).flat()
+            all.sort((a, b) => a.timestamp - b.timestamp)
+            setTxs(all)
+          } else {
+            setTxs([])
+          }
+        })
+        .catch(() => setTxs([]))
+        .finally(() => setTxLoading(false))
+    }
+    if (expanded) {
+      setTxVisible(TX_PAGE_SIZE)
+    }
+    setExpanded(v => !v)
+  }, [expanded, txs, walletAddress, dateMatches])
+
+  const remainingTxs = txs ? txs.length - txVisible : 0
+
+  return (
+    <div className="day-card" ref={cardRef}>
+      <div className="day-card-header">
+        <span>{date}</span>
+        {walletAddress && dateMatches.length > 0 && (
+          <button
+            className={`tx-toggle-btn ${expanded ? 'tx-toggle-expanded' : ''}`}
+            onClick={handleToggle}
+          >
+            {expanded ? 'Скрыть' : 'Транзакции'}
+          </button>
+        )}
+      </div>
+      {expanded && (
+        <div className="tx-list">
+          {txLoading && (
+            <div className="tx-loading">Загрузка...</div>
+          )}
+          {txs && txs.slice(0, txVisible).map((tx, i) => (
+            <TxRow key={tx.tx_hash || i} tx={tx} />
+          ))}
+          {remainingTxs > 0 && (
+            <button
+              className="tx-show-more"
+              onClick={() => setTxVisible(v => v + TX_PAGE_SIZE)}
+            >
+              Показать ещё {Math.min(remainingTxs, TX_PAGE_SIZE)} из {remainingTxs}
+            </button>
+          )}
+        </div>
+      )}
+      {wasVisible ? renderedBody : <div className="day-card-placeholder" />}
+    </div>
+  )
+})
+
+function ReportView({ report, loading, walletTag, walletAddress }) {
+  const { summary, sections } = useMemo(
+    () => parseReport(report?.markdown),
+    [report?.markdown]
+  )
+
   if (loading) {
     return (
       <div className="report-loading">
@@ -94,8 +221,6 @@ function ReportView({ report, loading, walletTag }) {
       </div>
     )
   }
-
-  const { summary, sections } = parseReport(report.markdown)
 
   const formatDate = (iso) => {
     if (!iso) return 'N/A'
@@ -129,7 +254,12 @@ function ReportView({ report, loading, walletTag }) {
 
       <div className="report-sections">
         {sections.map((section, i) => (
-          <DayCard key={i} date={section.date} content={section.content} />
+          <DayCard
+            key={i}
+            date={section.date}
+            content={section.content}
+            walletAddress={walletAddress}
+          />
         ))}
       </div>
 
