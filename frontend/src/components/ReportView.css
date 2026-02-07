@@ -88,6 +88,8 @@
   border: 1px solid #30363d;
   border-radius: 8px;
   overflow: hidden;
+  content-visibility: auto;
+  contain-intrinsic-height: auto 200px;
 }
 
 .day-card-header {
