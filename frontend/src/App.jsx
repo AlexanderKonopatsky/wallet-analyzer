@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import './App.css'
 import WalletSidebar from './components/WalletSidebar'
 import ReportView from './components/ReportView'
+import ProfileView from './components/ProfileView'
 
 function App() {
   const [wallets, setWallets] = useState([])
@@ -10,16 +11,41 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [refreshStatus, setRefreshStatus] = useState(null)
+  const [pollInterval, setPollInterval] = useState(null)
 
-  // Tag editing
-  const [editingTag, setEditingTag] = useState(false)
-  const [tagValue, setTagValue] = useState('')
+  // Profile
+  const [activeView, setActiveView] = useState('report') // 'report' | 'profile'
+  const [profile, setProfile] = useState(null)
+  const [profileLoading, setProfileLoading] = useState(false)
 
-  // Fetch list of tracked wallets
+
+  // Cleanup poll interval on unmount
   useEffect(() => {
-    fetch('/api/wallets')
-      .then(res => res.json())
-      .then(setWallets)
+    return () => {
+      if (pollInterval) {
+        clearInterval(pollInterval)
+      }
+    }
+  }, [pollInterval])
+
+  // Fetch list of tracked wallets and check for active refresh tasks
+  useEffect(() => {
+    Promise.all([
+      fetch('/api/wallets').then(res => res.json()),
+      fetch('/api/active-tasks').then(res => res.json())
+    ])
+      .then(([walletsData, activeTasks]) => {
+        setWallets(walletsData)
+
+        // If there's an active task and no wallet is selected, auto-select it
+        const activeWallets = Object.keys(activeTasks)
+        if (activeWallets.length > 0 && !selectedWallet) {
+          const activeWallet = activeWallets[0]
+          setSelectedWallet(activeWallet)
+          setRefreshStatus(activeTasks[activeWallet])
+          startMonitoring(activeWallet)
+        }
+      })
       .catch(() => {})
   }, [])
 
@@ -63,6 +89,73 @@ function App() {
     }
   }, [])
 
+  const loadProfile = useCallback(async (wallet, forceRegenerate = false) => {
+    if (!wallet) return
+    setProfileLoading(true)
+    setError(null)
+    setActiveView('profile')
+    try {
+      if (!forceRegenerate) {
+        const res = await fetch(`/api/profile/${wallet.toLowerCase()}`)
+        if (res.ok) {
+          setProfile(await res.json())
+          setProfileLoading(false)
+          return
+        }
+      }
+      // Generate (or regenerate)
+      const genRes = await fetch(`/api/profile/${wallet.toLowerCase()}/generate`, { method: 'POST' })
+      if (!genRes.ok) {
+        const err = await genRes.json()
+        throw new Error(err.detail || 'Failed to generate profile')
+      }
+      setProfile(await genRes.json())
+    } catch (err) {
+      setError(err.message)
+      setProfile(null)
+    } finally {
+      setProfileLoading(false)
+    }
+  }, [])
+
+  // Monitor refresh status (polling)
+  const startMonitoring = useCallback((wallet) => {
+    if (!wallet) return
+
+    // Clear any existing poll interval
+    if (pollInterval) {
+      clearInterval(pollInterval)
+    }
+
+    const poll = setInterval(async () => {
+      try {
+        const statusRes = await fetch(`/api/refresh-status/${wallet.toLowerCase()}`)
+        const statusData = await statusRes.json()
+        setRefreshStatus(statusData)
+
+        if (statusData.status === 'done' || statusData.status === 'error') {
+          clearInterval(poll)
+          setPollInterval(null)
+          if (statusData.status === 'done') {
+            await loadReport(wallet)
+            const walletsRes = await fetch('/api/wallets')
+            setWallets(await walletsRes.json())
+          }
+          if (statusData.status === 'error') {
+            setError(statusData.detail)
+          }
+          setTimeout(() => setRefreshStatus(null), 3000)
+        }
+      } catch {
+        clearInterval(poll)
+        setPollInterval(null)
+        setRefreshStatus(null)
+      }
+    }, 2000)
+
+    setPollInterval(poll)
+  }, [loadReport, pollInterval])
+
   const startRefresh = useCallback(async (wallet) => {
     if (!wallet) return
     setError(null)
@@ -77,64 +170,49 @@ function App() {
         setRefreshStatus({ status: 'fetching', detail: 'Starting...' })
       }
 
-      // Poll for status
-      const poll = setInterval(async () => {
-        try {
-          const statusRes = await fetch(`/api/refresh-status/${wallet.toLowerCase()}`)
-          const statusData = await statusRes.json()
-          setRefreshStatus(statusData)
-
-          if (statusData.status === 'done' || statusData.status === 'error') {
-            clearInterval(poll)
-            if (statusData.status === 'done') {
-              await loadReport(wallet)
-              const walletsRes = await fetch('/api/wallets')
-              setWallets(await walletsRes.json())
-            }
-            if (statusData.status === 'error') {
-              setError(statusData.detail)
-            }
-            setTimeout(() => setRefreshStatus(null), 3000)
-          }
-        } catch {
-          clearInterval(poll)
-          setRefreshStatus(null)
-        }
-      }, 2000)
+      // Start monitoring
+      startMonitoring(wallet)
     } catch (err) {
       setError(err.message)
       setRefreshStatus(null)
     }
-  }, [loadReport])
+  }, [startMonitoring])
 
-  const handleSelect = (wallet) => {
+  const handleSelect = useCallback(async (wallet) => {
     setSelectedWallet(wallet)
     setReport(null)
     setError(null)
     setRefreshStatus(null)
-    setEditingTag(false)
-    if (wallet) loadReport(wallet)
-  }
+    setActiveView('report')
+    setProfile(null)
+
+    if (wallet) {
+      // Try to load existing report
+      setLoading(true)
+      try {
+        const res = await fetch(`/api/report/${wallet.toLowerCase()}`)
+        if (res.status === 404) {
+          // No report exists - this is a new wallet, start refresh automatically
+          setLoading(false)
+          setError('Новый кошелёк. Запускаем загрузку и анализ...')
+          await startRefresh(wallet)
+        } else if (!res.ok) {
+          throw new Error('Failed to load report')
+        } else {
+          const data = await res.json()
+          setReport(data)
+          setLoading(false)
+        }
+      } catch (err) {
+        setError(err.message)
+        setReport(null)
+        setLoading(false)
+      }
+    }
+  }, [startRefresh])
 
   const isRefreshing = refreshStatus &&
     (refreshStatus.status === 'fetching' || refreshStatus.status === 'analyzing')
-
-  const startEditTag = () => {
-    setTagValue(currentTag)
-    setEditingTag(true)
-  }
-
-  const handleSaveTag = () => {
-    if (selectedWallet) {
-      saveTag(selectedWallet, tagValue.trim())
-    }
-    setEditingTag(false)
-  }
-
-  const handleTagKeyDown = (e) => {
-    if (e.key === 'Enter') handleSaveTag()
-    if (e.key === 'Escape') setEditingTag(false)
-  }
 
   return (
     <div className="app">
@@ -149,66 +227,53 @@ function App() {
           onSelect={handleSelect}
           onSaveTag={saveTag}
           onAction={(wallet, actionId) => {
-            console.log('wallet action:', actionId, wallet)
+            if (actionId === 'profile') {
+              loadProfile(wallet)
+            } else if (actionId === 'report') {
+              setActiveView('report')
+              setProfile(null)
+              loadReport(wallet)
+            }
           }}
         />
 
         <div className="app-content">
           {selectedWallet && (
             <div className="wallet-toolbar">
-              <div className="toolbar-left">
-                {!editingTag ? (
-                  currentTag ? (
-                    <span className="toolbar-tag" onClick={startEditTag}>{currentTag}</span>
-                  ) : (
-                    <span className="toolbar-tag-empty" onClick={startEditTag}>+ Добавить имя</span>
-                  )
-                ) : (
-                  <div className="toolbar-tag-edit">
-                    <input
-                      type="text"
-                      className="toolbar-tag-input"
-                      value={tagValue}
-                      onChange={e => setTagValue(e.target.value)}
-                      onKeyDown={handleTagKeyDown}
-                      placeholder="Имя кошелька..."
-                      autoFocus
-                      maxLength={50}
-                    />
-                    <button className="btn btn-tag-save" onClick={handleSaveTag}>Сохранить</button>
-                    <button className="btn btn-tag-cancel" onClick={() => setEditingTag(false)}>Отмена</button>
-                  </div>
-                )}
-              </div>
-
-              <div className="toolbar-right">
-                <button
-                  className="btn btn-refresh"
-                  onClick={() => startRefresh(selectedWallet)}
-                  disabled={isRefreshing}
-                >
-                  {isRefreshing ? 'Обновление...' : 'Обновить данные'}
-                </button>
-                {refreshStatus && (
-                  <span className={`refresh-status status-${refreshStatus.status}`}>
-                    {refreshStatus.status === 'fetching' && '● Загрузка транзакций...'}
-                    {refreshStatus.status === 'analyzing' && '● AI-анализ...'}
-                    {refreshStatus.status === 'done' && '✓ Готово!'}
-                    {refreshStatus.status === 'error' && '✗ Ошибка'}
-                  </span>
-                )}
-              </div>
+              <button
+                className="btn btn-refresh"
+                onClick={() => startRefresh(selectedWallet)}
+                disabled={isRefreshing}
+              >
+                {isRefreshing ? 'Обновление...' : 'Обновить данные'}
+              </button>
+              {refreshStatus && (
+                <span className={`refresh-status status-${refreshStatus.status}`}>
+                  {refreshStatus.status === 'fetching' && '● Загрузка транзакций...'}
+                  {refreshStatus.status === 'analyzing' && '● AI-анализ...'}
+                  {refreshStatus.status === 'done' && '✓ Готово!'}
+                  {refreshStatus.status === 'error' && '✗ Ошибка'}
+                </span>
+              )}
             </div>
           )}
 
           {error && <div className="error-banner">{error}</div>}
 
-          <ReportView
-            report={report}
-            loading={loading}
-            walletTag={currentTag}
-            walletAddress={selectedWallet}
-          />
+          {activeView === 'profile' ? (
+            <ProfileView
+              profile={profile}
+              loading={profileLoading}
+              onRegenerate={() => loadProfile(selectedWallet, true)}
+            />
+          ) : (
+            <ReportView
+              report={report}
+              loading={loading}
+              walletTag={currentTag}
+              walletAddress={selectedWallet}
+            />
+          )}
         </div>
       </div>
     </div>

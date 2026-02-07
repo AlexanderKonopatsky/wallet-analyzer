@@ -1,7 +1,9 @@
+import hashlib
 import io
 import json
 import sys
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Fix Windows encoding for Unicode characters in print() from imported modules
@@ -67,9 +69,21 @@ app.add_middleware(
 DATA_DIR = Path("data")
 REPORTS_DIR = Path("reports")
 TAGS_FILE = DATA_DIR / "wallet_tags.json"
+REFRESH_STATUS_FILE = DATA_DIR / "refresh_status.json"
 
-# Background task status tracking: {wallet: {status, detail}}
+# Profile generation settings
+PROFILE_MODEL = "google/gemini-3-flash-preview"
+PROFILE_MAX_TOKENS = 8192
+PROFILE_SYSTEM_PROMPT = """Ты — опытный ончейн-аналитик. Тебе дана подробная хронология активности крипто-кошелька.
+
+Прочитай отчёт целиком и составь глубокий профиль владельца. Не следуй шаблону — каждый кошелёк уникален, и профиль должен отражать именно то, что делает этого владельца особенным. Пиши о том, что действительно бросается в глаза и заслуживает внимания.
+
+Не пересказывай транзакции. Анализируй поведение, читай между строк, делай выводы. Ссылайся на конкретные события из отчёта как доказательства. Пиши на русском, используй markdown."""
+
+# Background task status tracking: {wallet: {status, detail, thread_id}}
 refresh_tasks: dict[str, dict] = {}
+# Active threads: {wallet: Thread object}
+active_threads: dict[str, threading.Thread] = {}
 
 
 def load_wallet_tags() -> dict:
@@ -85,6 +99,24 @@ def save_wallet_tags(tags: dict) -> None:
     DATA_DIR.mkdir(exist_ok=True)
     with open(TAGS_FILE, "w", encoding="utf-8") as f:
         json.dump(tags, f, indent=2, ensure_ascii=False)
+
+
+def load_refresh_status() -> dict:
+    """Load refresh task statuses from file."""
+    if REFRESH_STATUS_FILE.exists():
+        try:
+            with open(REFRESH_STATUS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_refresh_status(status_dict: dict) -> None:
+    """Save refresh task statuses to file."""
+    DATA_DIR.mkdir(exist_ok=True)
+    with open(REFRESH_STATUS_FILE, "w", encoding="utf-8") as f:
+        json.dump(status_dict, f, indent=2, ensure_ascii=False)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -216,9 +248,11 @@ def run_analysis_pipeline(wallet: str) -> None:
 
 def background_refresh(wallet: str) -> None:
     """Background task: fetch transactions then run analysis."""
+    wallet_lower = wallet.lower()
     try:
         # Step 1: Fetch transactions
-        refresh_tasks[wallet] = {"status": "fetching", "detail": "Fetching transactions from API..."}
+        refresh_tasks[wallet_lower] = {"status": "fetching", "detail": "Fetching transactions from API..."}
+        save_refresh_status(refresh_tasks)
 
         existing_data = load_existing_data(wallet)
         existing_txs = {tx["tx_hash"]: tx for tx in existing_data["transactions"]}
@@ -229,12 +263,34 @@ def background_refresh(wallet: str) -> None:
             save_data(wallet, all_transactions)
 
         # Step 2: Analyze
-        refresh_tasks[wallet] = {"status": "analyzing", "detail": "Analyzing transactions with AI..."}
+        refresh_tasks[wallet_lower] = {"status": "analyzing", "detail": "Analyzing transactions with AI..."}
+        save_refresh_status(refresh_tasks)
         run_analysis_pipeline(wallet)
 
-        refresh_tasks[wallet] = {"status": "done", "detail": "Refresh complete!"}
+        refresh_tasks[wallet_lower] = {"status": "done", "detail": "Refresh complete!"}
+        save_refresh_status(refresh_tasks)
     except Exception as e:
-        refresh_tasks[wallet] = {"status": "error", "detail": str(e)}
+        refresh_tasks[wallet_lower] = {"status": "error", "detail": str(e)}
+        save_refresh_status(refresh_tasks)
+    finally:
+        # Clean up thread reference
+        active_threads.pop(wallet_lower, None)
+
+
+# ── Startup: Load persisted refresh statuses ─────────────────────────────────
+
+# Load refresh statuses from disk on startup
+refresh_tasks = load_refresh_status()
+
+# Clean up any stale "fetching" or "analyzing" statuses
+# (these would be from interrupted previous runs)
+for wallet, status in list(refresh_tasks.items()):
+    if status.get("status") in ("fetching", "analyzing"):
+        refresh_tasks[wallet] = {
+            "status": "error",
+            "detail": "Task interrupted (server restarted)"
+        }
+save_refresh_status(refresh_tasks)
 
 
 # ── API Endpoints ─────────────────────────────────────────────────────────────
@@ -298,6 +354,57 @@ def get_report(wallet: str):
         "tx_count": meta["tx_count"] if meta else 0,
         "address": meta["address"] if meta else wallet,
     }
+
+
+@app.get("/api/profile/{wallet}")
+def get_profile(wallet: str):
+    """Get cached profile for a wallet."""
+    wallet = wallet.lower()
+    profile_path = REPORTS_DIR / f"{wallet}_profile.json"
+
+    if not profile_path.exists():
+        raise HTTPException(status_code=404, detail="No profile found")
+
+    with open(profile_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+@app.post("/api/profile/{wallet}/generate")
+def generate_profile(wallet: str):
+    """Generate wallet profile from report using LLM. Returns cached if report unchanged."""
+    wallet = wallet.lower()
+    report_path = REPORTS_DIR / f"{wallet}.md"
+
+    if not report_path.exists():
+        raise HTTPException(status_code=404, detail="Report not found. Refresh data first.")
+
+    markdown = report_path.read_text(encoding="utf-8")
+    report_hash = hashlib.md5(markdown.encode("utf-8")).hexdigest()
+
+    # Check cache
+    profile_path = REPORTS_DIR / f"{wallet}_profile.json"
+    if profile_path.exists():
+        with open(profile_path, "r", encoding="utf-8") as f:
+            cached = json.load(f)
+        if cached.get("report_hash") == report_hash:
+            return cached
+
+    # Generate profile via LLM
+    user_prompt = f"Вот хронология активности кошелька:\n\n{markdown}\n\nСоставь профиль этого кошелька."
+    profile_text = call_llm(PROFILE_SYSTEM_PROMPT, user_prompt, model=PROFILE_MODEL, max_tokens=PROFILE_MAX_TOKENS)
+
+    profile_data = {
+        "wallet": wallet,
+        "profile_text": profile_text,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "report_hash": report_hash,
+    }
+
+    REPORTS_DIR.mkdir(exist_ok=True)
+    with open(profile_path, "w", encoding="utf-8") as f:
+        json.dump(profile_data, f, indent=2, ensure_ascii=False)
+
+    return profile_data
 
 
 def format_tx_for_frontend(tx: dict) -> dict:
@@ -435,14 +542,24 @@ def start_refresh(wallet: str):
     """Start background fetch + analyze for a wallet."""
     wallet_lower = wallet.lower()
 
-    # Check if already running
-    current = refresh_tasks.get(wallet_lower, {})
-    if current.get("status") in ("fetching", "analyzing"):
+    # Check if thread is already running
+    existing_thread = active_threads.get(wallet_lower)
+    if existing_thread and existing_thread.is_alive():
+        current = refresh_tasks.get(wallet_lower, {})
         return {"status": "already_running", "detail": current.get("detail", "")}
 
+    # Check status from disk
+    current = refresh_tasks.get(wallet_lower, {})
+    if current.get("status") in ("fetching", "analyzing"):
+        # Status says running but no thread - might be stale, start new one
+        pass
+
     refresh_tasks[wallet_lower] = {"status": "fetching", "detail": "Starting..."}
-    thread = threading.Thread(target=background_refresh, args=(wallet,), daemon=True)
+    save_refresh_status(refresh_tasks)
+
+    thread = threading.Thread(target=background_refresh, args=(wallet,), daemon=False)
     thread.start()
+    active_threads[wallet_lower] = thread
 
     return {"status": "started"}
 
@@ -453,6 +570,17 @@ def get_refresh_status(wallet: str):
     wallet_lower = wallet.lower()
     status = refresh_tasks.get(wallet_lower, {"status": "idle", "detail": ""})
     return status
+
+
+@app.get("/api/active-tasks")
+def get_active_tasks():
+    """Get all active refresh tasks."""
+    active = {
+        wallet: status
+        for wallet, status in refresh_tasks.items()
+        if status.get("status") in ("fetching", "analyzing")
+    }
+    return active
 
 
 if __name__ == "__main__":

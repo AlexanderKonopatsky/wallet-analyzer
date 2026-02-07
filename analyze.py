@@ -321,7 +321,7 @@ def make_chunks(day_groups: OrderedDict, max_txs: int = CHUNK_MAX_TRANSACTIONS) 
 
 
 # ── LLM ────────────────────────────────────────────────────────────────────
-def call_llm(system_prompt: str, user_prompt: str) -> str:
+def call_llm(system_prompt: str, user_prompt: str, model: str = None, max_tokens: int = 4096) -> str:
     response = requests.post(
         "https://openrouter.ai/api/v1/chat/completions",
         headers={
@@ -329,12 +329,12 @@ def call_llm(system_prompt: str, user_prompt: str) -> str:
             "Content-Type": "application/json",
         },
         json={
-            "model": MODEL,
+            "model": model or MODEL,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            "max_tokens": 4096,
+            "max_tokens": max_tokens,
         },
         timeout=120,
     )

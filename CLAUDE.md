@@ -62,15 +62,18 @@ npm run build
 - `PUT /api/tags/{wallet}` — обновить тег
 - `GET /api/report/{wallet}` — получить markdown-отчёт
 - `POST /api/refresh/{wallet}` — запуск фонового обновления (fetch + analyze)
-- `GET /api/refresh-status/{wallet}` — статус обновления
+- `GET /api/refresh-status/{wallet}` — статус обновления для конкретного кошелька
+- `GET /api/active-tasks` — все активные задачи обновления
 
 ## Key Conventions
 - Язык интерфейса и отчётов: **русский**
 - Транзакции хранятся в `data/{wallet_address}.json`
 - Отчёты в `reports/{wallet_address}.md`, состояние в `reports/{wallet}_state.json`
+- Статус обновлений в `data/refresh_status.json` (персистентный)
 - Ключи API ротируются при 429 ошибках (до 99 ключей: CIELO_API_KEY_1..99)
 - Анализ инкрементальный: обрабатываются только новые транзакции
-- Фоновые задачи через daemon threads
+- Фоновые задачи через non-daemon threads (продолжаются независимо от браузера)
+- При добавлении нового кошелька автоматически запускается fetch + analyze
 
 ## Environment Variables (.env)
 - `CIELO_API_KEY` — основной ключ Cielo Finance
