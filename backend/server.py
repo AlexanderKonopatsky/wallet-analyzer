@@ -80,8 +80,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DATA_DIR = Path("data")
-REPORTS_DIR = Path("reports")
+# Path relative to project root
+PROJECT_ROOT = Path(__file__).parent.parent
+DATA_DIR = PROJECT_ROOT / "data"
+REPORTS_DIR = PROJECT_ROOT / "reports"
 TAGS_FILE = DATA_DIR / "wallet_tags.json"
 REFRESH_STATUS_FILE = DATA_DIR / "refresh_status.json"
 EXCLUDED_WALLETS_FILE = DATA_DIR / "excluded_wallets.json"

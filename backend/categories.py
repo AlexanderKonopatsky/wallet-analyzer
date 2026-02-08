@@ -9,13 +9,15 @@ from typing import Dict, List, Optional
 from pathlib import Path
 import uuid
 
-CATEGORIES_FILE = "data/categories.json"
+# Path relative to project root
+PROJECT_ROOT = Path(__file__).parent.parent
+CATEGORIES_FILE = PROJECT_ROOT / "data" / "categories.json"
 
 def ensure_categories_file():
     """Создаёт файл категорий с дефолтной структурой, если его нет."""
-    os.makedirs("data", exist_ok=True)
+    CATEGORIES_FILE.parent.mkdir(exist_ok=True)
 
-    if not os.path.exists(CATEGORIES_FILE):
+    if not CATEGORIES_FILE.exists():
         default_data = {
             "categories": [],
             "walletCategories": {}

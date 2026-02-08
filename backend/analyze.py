@@ -8,7 +8,8 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load .env from project root
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 # ── Configuration ──────────────────────────────────────────────────────────
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -17,8 +18,8 @@ DUST_THRESHOLD_USD = 1.0
 CHUNK_MAX_TRANSACTIONS = 30
 MAX_CONTEXT_SUMMARIES = None  # None = все "Суть дня", или число для ограничения на больших кошельках
 FULL_CHRONOLOGY_COUNT = int(os.getenv("FULL_CHRONOLOGY_COUNT", 1))
-DATA_DIR = Path("data")
-REPORTS_DIR = Path("reports")
+DATA_DIR = Path(__file__).parent.parent / "data"
+REPORTS_DIR = Path(__file__).parent.parent / "reports"
 
 SYSTEM_PROMPT = """\
 Ты — аналитик DeFi-транзакций. Твоя задача — описать на русском языке, \

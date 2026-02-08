@@ -7,10 +7,11 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load .env from project root
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 API_URL = "https://feed-api.cielo.finance/api/v1/feed"
-DATA_DIR = Path("data")
+DATA_DIR = Path(__file__).parent.parent / "data"
 
 
 def _load_api_keys() -> list[str]:
