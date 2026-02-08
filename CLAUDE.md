@@ -1,7 +1,7 @@
 # DeFi Wallet Analyzer
 
 ## Project Overview
-Full-stack приложение для анализа криптовалютных кошельков. Получает транзакции через Cielo Finance API, анализирует их с помощью AI (Google Gemini через OpenRouter) и генерирует отчёты на русском языке.
+Full-stack application for analyzing cryptocurrency wallet transactions. Fetches transactions via Cielo Finance API, analyzes them using AI (Google Gemini via OpenRouter), and generates reports in Russian language.
 
 ## Tech Stack
 - **Backend**: Python 3, FastAPI, Uvicorn
@@ -11,64 +11,63 @@ Full-stack приложение для анализа криптовалютны
 
 ## Project Structure
 ```
-├── backend_CLAUDE.md      # 📚 Backend documentation (detailed API, modules)
-├── main.py                # Получение транзакций из Cielo API
-├── analyze.py             # AI-анализ транзакций
-├── categories.py          # Классификация кошельков (LLM)
-├── portfolio.py           # Статистика портфолио (Grade A-F, P&L)
-├── server.py              # FastAPI REST API + фоновые задачи
-├── frontend/              # React приложение
+├── backend/               # Python backend
+│   ├── CLAUDE.md          # 📚 Backend documentation (API, modules, architecture)
+│   ├── main.py            # Cielo API client (fetch transactions)
+│   ├── analyze.py         # AI analysis engine (Gemini via OpenRouter)
+│   ├── categories.py      # LLM wallet classification
+│   ├── portfolio.py       # Portfolio statistics (Grade A-F, P&L)
+│   └── server.py          # FastAPI REST API + background tasks
+├── frontend/              # React application
 │   ├── CLAUDE.md          # 📚 Frontend documentation (components, data flow)
 │   └── src/
 │       ├── App.jsx
 │       └── components/
-│           ├── WalletSidebar.jsx   # Список кошельков + refresh
-│           ├── ReportView.jsx      # Markdown отчёты + related wallets
-│           ├── ProfileView.jsx     # AI-профиль кошелька
-│           └── PortfolioView.jsx   # Агрегированная статистика
-├── data/                  # JSON-файлы транзакций
-│   └── CLAUDE.md          # 📚 Data formats: transactions, tags, excluded wallets
-├── reports/               # Markdown-отчёты + state-файлы
+│           ├── WalletSidebar.jsx   # Wallet list + refresh button
+│           ├── ReportView.jsx      # Markdown reports + related wallets
+│           ├── ProfileView.jsx     # AI-generated wallet profile
+│           └── PortfolioView.jsx   # Aggregated statistics
+├── data/                  # Transaction JSON files
+│   └── CLAUDE.md          # 📚 Data formats (transactions, tags, excluded wallets)
+├── reports/               # Markdown reports + state files
 │   └── CLAUDE.md          # 📚 Report structure, state files, portfolio JSON
-└── .env                   # API ключи
+└── .env                   # API keys (not committed)
 ```
 
 ## 📚 Documentation Map
-- **[backend_CLAUDE.md](backend_CLAUDE.md)** — Backend modules, API endpoints, background tasks, error handling
+- **[backend/CLAUDE.md](backend/CLAUDE.md)** — Backend modules, API endpoints, background tasks, error handling
 - **[frontend/CLAUDE.md](frontend/CLAUDE.md)** — React components, data flow, UI patterns, API usage
 - **[data/CLAUDE.md](data/CLAUDE.md)** — Transaction formats, metadata files (tags, categories, excluded)
 - **[reports/CLAUDE.md](reports/CLAUDE.md)** — Report structure, state files, portfolio/profile JSON formats
-- **[SKILLS_GUIDE.md](SKILLS_GUIDE.md)** — Руководство по Skills (автоматизация задач в Claude Code)
-- **[IMPROVEMENTS_SUMMARY.md](IMPROVEMENTS_SUMMARY.md)** — Обзор улучшений и рекомендации
 
 ## Commands
 
 ### Backend
 ```bash
-# Установка зависимостей
+# Install dependencies
 pip install -r requirements.txt
 
-# Запуск сервера (порт 8000)
-python server.py
+# Run server (port 8000)
+python backend/server.py
 
-# Получение транзакций для кошелька напрямую
-python main.py
+# Fetch transactions for wallet directly
+python backend/main.py
 
-# Анализ транзакций напрямую
-python analyze.py
+# Analyze transactions directly
+python backend/analyze.py
 ```
 
 ### Frontend
 ```bash
 cd frontend
 
-# Установка зависимостей
+# Install dependencies
 npm install
 
-# Запуск dev-сервера (порт 5173, прокси на :8000)
+# Run dev server (port 5173, proxy to :8000)
 npm run dev
 
-# Сборка
+# Build for production
 npm run build
 ```
 
@@ -81,14 +80,14 @@ npm run build
 - **Classify related wallet**: ReportView → "Classify" button → LLM analysis
 - **Exclude wallet**: Related card → "Exclude" → saved to `excluded_wallets.json`
 
-### Key API Endpoints (подробнее в backend_CLAUDE.md)
-- `GET /api/wallets` — список кошельков с метаданными
-- `GET /api/report/{wallet}` — markdown-отчёт + related wallets
-- `POST /api/refresh/{wallet}` — запуск фонового обновления (fetch + analyze)
-- `GET /api/refresh-status/{wallet}` — статус обновления
-- `POST /api/classify-wallet/{address}` — классифицировать через LLM
+### Key API Endpoints
+- `GET /api/wallets` — list of wallets with metadata
+- `GET /api/report/{wallet}` — markdown report + related wallets
+- `POST /api/refresh/{wallet}` — start background refresh (fetch + analyze)
+- `GET /api/refresh-status/{wallet}` — refresh status
+- `POST /api/classify-wallet/{address}` — classify via LLM
 - `GET /api/portfolio/{wallet}` — Grade A-F, P&L, win rate
-- **Полный список**: см. [backend_CLAUDE.md](backend_CLAUDE.md)
+- **Full list**: see [backend/CLAUDE.md](backend/CLAUDE.md)
 
 ## Key Conventions
 - Interface language: **English**, Reports language: **Russian**

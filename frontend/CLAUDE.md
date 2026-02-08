@@ -1,12 +1,12 @@
 # Frontend (React + Vite)
 
-React 19 приложение с Vite 7 для визуализации анализа криптокошельков.
+React 19 application with Vite 7 for visualizing cryptocurrency wallet analysis.
 
 ## Tech Stack
 - **React 19** — UI framework
 - **Vite 7** — dev server & bundler
-- **react-markdown** — рендеринг markdown-отчётов
-- **CSS Modules** — стилизация компонентов
+- **react-markdown** — markdown report rendering
+- **CSS Modules** — component styling
 
 ## Project Structure
 ```
@@ -16,12 +16,12 @@ src/
 ├── App.css           # Global styles
 ├── index.css         # Base styles
 └── components/
-    ├── WalletSidebar.jsx     # Список кошельков + теги
+    ├── WalletSidebar.jsx     # Wallet list + tags
     ├── WalletSidebar.css
-    ├── ReportView.jsx        # Отображение markdown-отчёта
+    ├── ReportView.jsx        # Markdown report display
     ├── ReportView.css
-    ├── ProfileView.jsx       # Профиль кошелька (AI-generated)
-    ├── PortfolioView.jsx     # Агрегированная статистика
+    ├── ProfileView.jsx       # Wallet profile (AI-generated)
+    ├── PortfolioView.jsx     # Aggregated statistics
     └── PortfolioView.css
 ```
 
@@ -29,64 +29,64 @@ src/
 
 ### App.jsx
 **Responsibilities**:
-- Управление выбранным кошельком (`selectedWallet` state)
-- Переключение вкладок: Report / Profile / Portfolio / Related
-- Загрузка списка кошельков (`/api/wallets`)
-- Передача данных в дочерние компоненты
+- Manage selected wallet (`selectedWallet` state)
+- Switch tabs: Report / Profile / Portfolio / Related
+- Load wallet list (`/api/wallets`)
+- Pass data to child components
 
 **Key State**:
 ```jsx
-const [wallets, setWallets] = useState([])           // Список кошельков с метаданными
-const [selectedWallet, setSelectedWallet] = useState(null)  // Выбранный кошелёк
-const [activeTab, setActiveTab] = useState('report')       // Текущая вкладка
+const [wallets, setWallets] = useState([])           // List of wallets with metadata
+const [selectedWallet, setSelectedWallet] = useState(null)  // Selected wallet
+const [activeTab, setActiveTab] = useState('report')       // Current tab
 ```
 
 **API Endpoints Used**:
-- `GET /api/wallets` — получить список кошельков + метаданные
+- `GET /api/wallets` — get wallet list + metadata
 
 ### WalletSidebar.jsx
 **Responsibilities**:
-- Отображение списка кошельков с тегами
-- Индикация статуса обновления (processing / completed / error)
-- Кнопка обновления (refresh) для каждого кошелька
-- Добавление нового кошелька
-- Редактирование тегов (inline edit)
+- Display wallet list with tags
+- Show update status indicator (processing / completed / error)
+- Refresh button for each wallet
+- Add new wallet
+- Edit tags (inline edit)
 
 **Key Features**:
-- Поллинг статуса обновления (`/api/refresh-status/{wallet}`) каждые 2 сек при активной задаче
-- Цветовая индикация: 🔄 processing, ✅ completed, ❌ error
-- Inline редактирование тега (двойной клик)
+- Poll refresh status (`/api/refresh-status/{wallet}`) every 2 sec while task is active
+- Color indicators: 🔄 processing, ✅ completed, ❌ error
+- Inline tag editing (double click)
 
 **API Endpoints Used**:
-- `PUT /api/tags/{wallet}` — обновить тег
-- `POST /api/refresh/{wallet}` — запустить обновление (fetch + analyze)
-- `GET /api/refresh-status/{wallet}` — получить статус обновления
+- `PUT /api/tags/{wallet}` — update tag
+- `POST /api/refresh/{wallet}` — start refresh (fetch + analyze)
+- `GET /api/refresh-status/{wallet}` — get refresh status
 
 ### ReportView.jsx
 **Responsibilities**:
-- Загрузка и отображение markdown-отчёта
-- Рендеринг через `react-markdown`
-- Показ "related wallets" (адреса с наибольшей активностью)
-- Кнопки exclude/include для related wallets
-- Автоклассификация related wallets через LLM
+- Load and display markdown report
+- Render via `react-markdown`
+- Show "related wallets" (addresses with highest activity)
+- Exclude/include buttons for related wallets
+- Auto-classify related wallets via LLM
 
 **Key Features**:
-- **Related Wallets**: карточки с адресами, с которыми был наибольший оборот
-  - Показываются: адрес, суммы sent/received (USD), количество транзакций
-  - Кнопки: "Show transactions", "Exclude", "Include", "Classify" (LLM)
-- **Batch Auto-Classification**: параллельная классификация нескольких related wallets
-  - Управляется через `AUTO_CLASSIFY_BATCH_SIZE` (default: 3)
-  - UI показывает прогресс каждого запроса
-- **Transaction Details**: раскрывающиеся списки транзакций для каждого related wallet
-  - Показывают: дату, тип, сумму, токен, чейн
+- **Related Wallets**: cards with addresses that had the most activity
+  - Display: address, amounts sent/received (USD), transaction count
+  - Buttons: "Show transactions", "Exclude", "Include", "Classify" (LLM)
+- **Batch Auto-Classification**: parallel classification of multiple related wallets
+  - Controlled via `AUTO_CLASSIFY_BATCH_SIZE` (default: 3)
+  - UI shows progress for each request
+- **Transaction Details**: expandable lists of transactions for each related wallet
+  - Show: date, type, amount, token, chain
 
 **API Endpoints Used**:
-- `GET /api/report/{wallet}` — получить markdown + related wallets
-- `GET /api/related-transactions/{wallet}?counterparty={addr}&direction={sent|received}` — транзакции
-- `POST /api/classify-wallet/{address}` — классифицировать через LLM
-- `POST /api/excluded-wallets` — добавить в исключения
-- `DELETE /api/excluded-wallets/{address}` — убрать из исключений
-- `GET /api/settings` — получить настройки (batch size и др.)
+- `GET /api/report/{wallet}` — get markdown + related wallets
+- `GET /api/related-transactions/{wallet}?counterparty={addr}&direction={sent|received}` — transactions
+- `POST /api/classify-wallet/{address}` — classify via LLM
+- `POST /api/excluded-wallets` — add to exclusions
+- `DELETE /api/excluded-wallets/{address}` — remove from exclusions
+- `GET /api/settings` — get settings (batch size, etc.)
 
 **Related Wallet Card Structure**:
 ```jsx
@@ -113,48 +113,48 @@ const [activeTab, setActiveTab] = useState('report')       // Текущая в�
 
 ### ProfileView.jsx
 **Responsibilities**:
-- Отображение AI-сгенерированного профиля пользователя кошелька
-- Показ поведенческих паттернов, уровня риска, основных активностей
+- Display AI-generated wallet user profile
+- Show behavior patterns, risk level, main activities
 
 **Data Source**: `reports/{wallet}_profile.json`
 
 **API Endpoints Used**:
-- `GET /api/profile/{wallet}` — получить профиль (если реализовано)
-- Или загружается напрямую из `reports/` (статический файл)
+- `GET /api/profile/{wallet}` — get profile (if implemented)
+- Or load directly from `reports/` (static file)
 
 ### PortfolioView.jsx
 **Responsibilities**:
-- Агрегированная статистика по токенам, протоколам, чейнам
-- Графики и таблицы активности
+- Aggregated statistics by tokens, protocols, chains
+- Charts and activity tables
 
 **Data Source**: `reports/{wallet}_portfolio.json`
 
 **API Endpoints Used**:
-- `GET /api/portfolio/{wallet}` — получить статистику (если реализовано)
+- `GET /api/portfolio/{wallet}` — get statistics (if implemented)
 
 ## Styling Conventions
 
 - **CSS Variables** (`:root`):
   - `--primary-color`, `--bg-color`, `--text-color`, etc.
-  - Позволяют легко менять тему
+  - Allow easy theme switching
 - **Component-specific CSS**:
-  - Каждый компонент имеет свой `.css` файл
-  - Используйте BEM-подобную нотацию для классов
+  - Each component has its own `.css` file
+  - Use BEM-like notation for class names
 
 ## Data Flow
 
-1. **App.jsx** загружает список кошельков при mount
-2. Пользователь выбирает кошелёк → `setSelectedWallet(addr)`
-3. **ReportView** загружает отчёт для `selectedWallet`
-4. Пользователь нажимает "Refresh" в **WalletSidebar**
-   - Отправляется POST `/api/refresh/{wallet}`
-   - Запускается фоновая задача (fetch → analyze)
-   - Frontend поллит `/api/refresh-status/{wallet}` каждые 2 сек
-   - При статусе "completed" обновляет UI
+1. **App.jsx** loads wallet list on mount
+2. User selects wallet → `setSelectedWallet(addr)`
+3. **ReportView** loads report for `selectedWallet`
+4. User clicks "Refresh" in **WalletSidebar**
+   - POST `/api/refresh/{wallet}` is sent
+   - Background task starts (fetch → analyze)
+   - Frontend polls `/api/refresh-status/{wallet}` every 2 sec
+   - On "completed" status, UI updates
 
 ## Backend API Proxy
 
-Vite прокси настроен в `vite.config.js`:
+Vite proxy configured in `vite.config.js`:
 ```js
 server: {
   proxy: {
@@ -163,21 +163,21 @@ server: {
 }
 ```
 
-Все запросы `/api/*` перенаправляются на FastAPI сервер (порт 8000).
+All `/api/*` requests are forwarded to FastAPI server (port 8000).
 
 ## Development
 
 ```bash
-npm install         # Установка зависимостей
-npm run dev         # Dev server (порт 5173)
+npm install         # Install dependencies
+npm run dev         # Dev server (port 5173)
 npm run build       # Production build
 npm run preview     # Preview production build
 ```
 
 ## Important Notes
 
-- **CORS**: Backend (server.py) настроен для localhost:5173 и localhost:5174
-- **Polling**: WalletSidebar поллит статус обновления только при активных задачах
-- **Error Handling**: Все fetch-запросы обёрнуты в try-catch с fallback UI
-- **Language**: Interface на английском, отчёты на русском
-- **React 19 Features**: Используйте новые хуки (useTransition, useDeferredValue) для оптимизации
+- **CORS**: Backend (server.py) configured for localhost:5173 and localhost:5174
+- **Polling**: WalletSidebar polls refresh status only while tasks are active
+- **Error Handling**: All fetch requests wrapped in try-catch with fallback UI
+- **Language**: Interface in English, reports in Russian
+- **React 19 Features**: Use new hooks (useTransition, useDeferredValue) for optimization
