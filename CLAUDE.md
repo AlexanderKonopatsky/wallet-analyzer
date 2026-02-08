@@ -11,19 +11,35 @@ Full-stack приложение для анализа криптовалютны
 
 ## Project Structure
 ```
-├── main.py          # Получение транзакций из Cielo API (ротация ключей, пагинация)
-├── analyze.py       # AI-анализ транзакций (чанкинг по дням, инкрементальная обработка)
-├── server.py        # FastAPI сервер (REST API, фоновые задачи)
-├── frontend/        # React приложение (Vite)
+├── backend_CLAUDE.md      # 📚 Backend documentation (detailed API, modules)
+├── main.py                # Получение транзакций из Cielo API
+├── analyze.py             # AI-анализ транзакций
+├── categories.py          # Классификация кошельков (LLM)
+├── portfolio.py           # Статистика портфолио (Grade A-F, P&L)
+├── server.py              # FastAPI REST API + фоновые задачи
+├── frontend/              # React приложение
+│   ├── CLAUDE.md          # 📚 Frontend documentation (components, data flow)
 │   └── src/
 │       ├── App.jsx
 │       └── components/
-│           ├── WalletInput.jsx   # Выбор кошелька, обновление данных
-│           └── ReportView.jsx    # Отображение отчётов (markdown)
-├── data/            # JSON-файлы транзакций (по кошелькам) + wallet_tags.json
-├── reports/         # Markdown-отчёты + state-файлы анализа
-└── .env             # API ключи (CIELO_API_KEY, OPENROUTER_API_KEY и др.)
+│           ├── WalletSidebar.jsx   # Список кошельков + refresh
+│           ├── ReportView.jsx      # Markdown отчёты + related wallets
+│           ├── ProfileView.jsx     # AI-профиль кошелька
+│           └── PortfolioView.jsx   # Агрегированная статистика
+├── data/                  # JSON-файлы транзакций
+│   └── CLAUDE.md          # 📚 Data formats: transactions, tags, excluded wallets
+├── reports/               # Markdown-отчёты + state-файлы
+│   └── CLAUDE.md          # 📚 Report structure, state files, portfolio JSON
+└── .env                   # API ключи
 ```
+
+## 📚 Documentation Map
+- **[backend_CLAUDE.md](backend_CLAUDE.md)** — Backend modules, API endpoints, background tasks, error handling
+- **[frontend/CLAUDE.md](frontend/CLAUDE.md)** — React components, data flow, UI patterns, API usage
+- **[data/CLAUDE.md](data/CLAUDE.md)** — Transaction formats, metadata files (tags, categories, excluded)
+- **[reports/CLAUDE.md](reports/CLAUDE.md)** — Report structure, state files, portfolio/profile JSON formats
+- **[SKILLS_GUIDE.md](SKILLS_GUIDE.md)** — Руководство по Skills (автоматизация задач в Claude Code)
+- **[IMPROVEMENTS_SUMMARY.md](IMPROVEMENTS_SUMMARY.md)** — Обзор улучшений и рекомендации
 
 ## Commands
 
@@ -56,21 +72,23 @@ npm run dev
 npm run build
 ```
 
-## API Endpoints
-- `GET /api/settings` — получить настройки приложения (batch size и др.)
+## Quick Reference
+
+### Common Tasks
+- **Add new wallet**: Frontend → POST `/api/refresh/{wallet}` → auto fetch + analyze
+- **Update wallet**: WalletSidebar refresh button → background task
+- **View report**: ReportView loads `reports/{wallet}.md`
+- **Classify related wallet**: ReportView → "Classify" button → LLM analysis
+- **Exclude wallet**: Related card → "Exclude" → saved to `excluded_wallets.json`
+
+### Key API Endpoints (подробнее в backend_CLAUDE.md)
 - `GET /api/wallets` — список кошельков с метаданными
-- `GET /api/tags` — теги кошельков
-- `PUT /api/tags/{wallet}` — обновить тег
-- `GET /api/report/{wallet}` — получить markdown-отчёт
+- `GET /api/report/{wallet}` — markdown-отчёт + related wallets
 - `POST /api/refresh/{wallet}` — запуск фонового обновления (fetch + analyze)
-- `GET /api/refresh-status/{wallet}` — статус обновления для конкретного кошелька
-- `GET /api/active-tasks` — все активные задачи обновления
-- `GET /api/excluded-wallets` — список исключённых кошельков
-- `POST /api/excluded-wallets` — добавить кошелёк в исключения (manual)
-- `DELETE /api/excluded-wallets/{address}` — убрать из исключений
-- `POST /api/classify-wallet/{address}` — классифицировать кошелёк через LLM (auto-exclude if confident)
-- `GET /api/portfolio/{wallet}` — анализ эффективности кошелька (Grade A-F, P&L, win rate, по токенам/протоколам)
-- `POST /api/portfolio/{wallet}/refresh` — пересчитать анализ
+- `GET /api/refresh-status/{wallet}` — статус обновления
+- `POST /api/classify-wallet/{address}` — классифицировать через LLM
+- `GET /api/portfolio/{wallet}` — Grade A-F, P&L, win rate
+- **Полный список**: см. [backend_CLAUDE.md](backend_CLAUDE.md)
 
 ## Key Conventions
 - Interface language: **English**, Reports language: **Russian**
