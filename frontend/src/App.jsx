@@ -3,6 +3,7 @@ import './App.css'
 import WalletSidebar from './components/WalletSidebar'
 import ReportView, { TxRow } from './components/ReportView'
 import ProfileView from './components/ProfileView'
+import PortfolioView from './components/PortfolioView'
 
 function countSections(markdown) {
   if (!markdown) return 0
@@ -124,9 +125,13 @@ function App() {
   const [pollInterval, setPollInterval] = useState(null)
 
   // Profile
-  const [activeView, setActiveView] = useState('report') // 'report' | 'profile'
+  const [activeView, setActiveView] = useState('report') // 'report' | 'profile' | 'portfolio'
   const [profile, setProfile] = useState(null)
   const [profileLoading, setProfileLoading] = useState(false)
+
+  // Portfolio
+  const [portfolio, setPortfolio] = useState(null)
+  const [portfolioLoading, setPortfolioLoading] = useState(false)
 
   // Related wallets modal
   const [relatedData, setRelatedData] = useState(null)
@@ -446,6 +451,27 @@ function App() {
     }
   }, [])
 
+  const loadPortfolio = useCallback(async (wallet, forceRefresh = false) => {
+    if (!wallet) return
+    setPortfolioLoading(true)
+    setError(null)
+    setActiveView('portfolio')
+    try {
+      const url = forceRefresh
+        ? `/api/portfolio/${wallet.toLowerCase()}/refresh`
+        : `/api/portfolio/${wallet.toLowerCase()}`
+      const opts = forceRefresh ? { method: 'POST' } : {}
+      const res = await fetch(url, opts)
+      if (!res.ok) throw new Error('Failed to load portfolio')
+      setPortfolio(await res.json())
+    } catch (err) {
+      setError(err.message)
+      setPortfolio(null)
+    } finally {
+      setPortfolioLoading(false)
+    }
+  }, [])
+
   const fetchRelatedWallets = useCallback(async (wallet) => {
     if (!wallet) return
     setRelatedWallet(wallet)
@@ -598,6 +624,7 @@ function App() {
     setRefreshStatus(null)
     setActiveView('report')
     setProfile(null)
+    setPortfolio(null)
     setOldSectionCount(null)
 
     if (wallet) {
@@ -648,6 +675,8 @@ function App() {
               fetchRelatedWallets(wallet)
             } else if (actionId === 'profile') {
               loadProfile(wallet)
+            } else if (actionId === 'analysis') {
+              loadPortfolio(wallet)
             } else if (actionId === 'report') {
               setActiveView('report')
               setProfile(null)
@@ -679,7 +708,13 @@ function App() {
 
           {error && <div className="error-banner">{error}</div>}
 
-          {activeView === 'profile' ? (
+          {activeView === 'portfolio' ? (
+            <PortfolioView
+              portfolio={portfolio}
+              loading={portfolioLoading}
+              onRefresh={() => loadPortfolio(selectedWallet, true)}
+            />
+          ) : activeView === 'profile' ? (
             <ProfileView
               profile={profile}
               loading={profileLoading}

@@ -36,6 +36,7 @@ from analyze import (
     SYSTEM_PROMPT,
     FULL_CHRONOLOGY_COUNT,
 )
+from portfolio import analyze_portfolio, load_cached_portfolio, is_cache_valid
 from categories import (
     get_all_categories,
     get_category_by_id,
@@ -564,6 +565,36 @@ def generate_profile(wallet: str):
         json.dump(profile_data, f, indent=2, ensure_ascii=False)
 
     return profile_data
+
+
+# ── Portfolio Analysis ────────────────────────────────────────────────────────
+
+
+@app.get("/api/portfolio/{wallet}")
+def get_portfolio(wallet: str):
+    """Get portfolio analysis for a wallet. Returns cached if valid."""
+    wallet = wallet.lower()
+    filepath = DATA_DIR / f"{wallet}.json"
+    if not filepath.exists():
+        raise HTTPException(status_code=404, detail="No transaction data found")
+
+    if is_cache_valid(wallet):
+        cached = load_cached_portfolio(wallet)
+        if cached:
+            return cached
+
+    return analyze_portfolio(wallet)
+
+
+@app.post("/api/portfolio/{wallet}/refresh")
+def refresh_portfolio(wallet: str):
+    """Force recompute portfolio analysis."""
+    wallet = wallet.lower()
+    filepath = DATA_DIR / f"{wallet}.json"
+    if not filepath.exists():
+        raise HTTPException(status_code=404, detail="No transaction data found")
+
+    return analyze_portfolio(wallet)
 
 
 # ── Wallet Exclusion (classification) ─────────────────────────────────────────

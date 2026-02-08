@@ -69,6 +69,8 @@ npm run build
 - `POST /api/excluded-wallets` — добавить кошелёк в исключения (manual)
 - `DELETE /api/excluded-wallets/{address}` — убрать из исключений
 - `POST /api/classify-wallet/{address}` — классифицировать кошелёк через LLM (auto-exclude if confident)
+- `GET /api/portfolio/{wallet}` — анализ эффективности кошелька (Grade A-F, P&L, win rate, по токенам/протоколам)
+- `POST /api/portfolio/{wallet}/refresh` — пересчитать анализ
 
 ## Key Conventions
 - Interface language: **English**, Reports language: **Russian**
@@ -88,6 +90,29 @@ npm run build
 - `OPENROUTER_API_KEY` — OpenRouter API key for AI analysis
 - `FULL_CHRONOLOGY_COUNT` — number of recent analyses for full context (default: 1)
 - `AUTO_CLASSIFY_BATCH_SIZE` — number of related wallets to classify in parallel (default: 3)
+
+## Portfolio Analysis (Grade A-F)
+New module `portfolio.py` replays all transactions chronologically (FIFO cost basis tracking) and calculates:
+- **Grade (A-F)** based on win rate + profitability magnitude
+- **Realized P&L** per token, protocol, and overall
+- **Win Rate** and average trade metrics
+- **Expandable drilldown** in UI — click token/protocol to see all individual trades
+
+### Known Limitations & TODOs
+1. **Zero-cost tokens**: Tokens acquired via lending borrow, LP, or untracked transfers have $0 cost basis. When sold, P&L is set to $0 (conservative) since true cost is unknown. This may undercount profits if the wallet acquired tokens via recognized on-chain sources (rewards, airdrops, etc.) but those weren't captured by Cielo API.
+
+2. **No unrealized P&L**: Only realized P&L is calculated (when tokens are sold). Current holdings show quantity only, not USD value — would require live price feed.
+
+3. **Dust filtering**: Trades <$1 cost or proceeds are excluded from metrics.
+
+4. **Missing transaction sources**: If Cielo API doesn't capture some transfer/lending events, cost basis tracking may be incomplete.
+
+### Future Improvements
+- Integrate live price feed (Uniswap, CoinGecko) for unrealized P&L
+- Classify tokens by source (swap, transfer, airdrop) to improve cost basis estimation
+- Add portfolio composition heatmap (token allocation over time)
+- Export portfolio data (CSV, JSON) for external analysis
+- Support multi-wallet portfolio aggregation
 
 ## Important Notes
 - Don't commit `.env`, `data/`, `reports/` (in .gitignore)
