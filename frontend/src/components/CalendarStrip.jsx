@@ -25,23 +25,24 @@ function CalendarStrip({ sections }) {
   const { monthGrids, gaps } = useMemo(() => {
     if (!sections || sections.length === 0) return { monthGrids: [], gaps: [] }
 
-    // Build dateIso → targetId map
-    const dateToTarget = new Map()
+    // Build dateIso → { targetId, significance } map
+    const dateToInfo = new Map()
     sections.forEach(section => {
       const dates = extractDatesFromSection(section)
       const targetId = `day-${section._sortDate}`
+      const significance = section._significance || 3
       dates.forEach(d => {
-        if (!dateToTarget.has(d)) {
-          dateToTarget.set(d, targetId)
+        if (!dateToInfo.has(d)) {
+          dateToInfo.set(d, { targetId, significance })
         }
       })
     })
 
-    if (dateToTarget.size === 0) return { monthGrids: [], gaps: [] }
+    if (dateToInfo.size === 0) return { monthGrids: [], gaps: [] }
 
     // Collect unique months
     const monthKeys = new Set()
-    dateToTarget.forEach((_, dateStr) => {
+    dateToInfo.forEach((_, dateStr) => {
       monthKeys.add(dateStr.slice(0, 7))
     })
     const sortedMonths = [...monthKeys].sort()
@@ -60,11 +61,13 @@ function CalendarStrip({ sections }) {
       for (let i = 0; i < startDow; i++) cells.push(null)
       for (let day = 1; day <= daysInMonth; day++) {
         const iso = `${monthKey}-${String(day).padStart(2, '0')}`
+        const info = dateToInfo.get(iso)
         cells.push({
           day,
           iso,
-          active: dateToTarget.has(iso),
-          targetId: dateToTarget.get(iso) || null,
+          active: !!info,
+          targetId: info?.targetId || null,
+          significance: info?.significance || 0,
           isToday: iso === todayIso,
         })
       }
@@ -105,6 +108,7 @@ function CalendarStrip({ sections }) {
   }, [])
 
   const handleDayClick = useCallback((targetId) => {
+    document.dispatchEvent(new CustomEvent('expand-day', { detail: { targetId } }))
     const el = document.getElementById(targetId)
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -134,7 +138,7 @@ function CalendarStrip({ sections }) {
                       key={ci}
                       className={[
                         'cal-cell',
-                        cell.active ? 'cal-cell-active' : 'cal-cell-inactive',
+                        cell.active ? `cal-cell-sig-${cell.significance <= 2 ? 'low' : cell.significance >= 4 ? 'high' : 'mid'}` : 'cal-cell-inactive',
                         cell.isToday ? 'cal-cell-today' : '',
                       ].filter(Boolean).join(' ')}
                       onClick={cell.active ? () => handleDayClick(cell.targetId) : undefined}

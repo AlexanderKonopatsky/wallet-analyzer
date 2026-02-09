@@ -38,6 +38,9 @@ function parseReport(markdown) {
     const m = s.date.match(/\d{4}-\d{2}-\d{2}/)
     s._sortDate = m ? m[0] : ''
     s._originalIndex = i
+    // Extract significance level (default 3 for backward compatibility)
+    const sigMatch = s.content.match(/\*\*Важность:\s*(\d)\s*\*\*/)
+    s._significance = sigMatch ? Math.min(5, Math.max(1, parseInt(sigMatch[1], 10))) : 3
   })
   sections.sort((a, b) => b._sortDate.localeCompare(a._sortDate))
 
@@ -86,8 +89,9 @@ const TxRow = memo(function TxRow({ tx }) {
   )
 })
 
-const DayCard = memo(function DayCard({ id, date, content, walletAddress, isNew }) {
-  const [expanded, setExpanded] = useState(false)
+const DayCard = memo(function DayCard({ id, date, content, walletAddress, isNew, significance = 3, defaultOpen = false }) {
+  const [contentOpen, setContentOpen] = useState(defaultOpen)
+  const [txExpanded, setTxExpanded] = useState(false)
   const [txs, setTxs] = useState(null)
   const [txLoading, setTxLoading] = useState(false)
   const [txVisible, setTxVisible] = useState(TX_PAGE_SIZE)
@@ -110,36 +114,47 @@ const DayCard = memo(function DayCard({ id, date, content, walletAddress, isNew 
     return () => observer.disconnect()
   }, [wasVisible])
 
-  const { mainContent, daySummary } = useMemo(() => {
+  // Listen for expand-day events from CalendarStrip
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.detail?.targetId === id) {
+        setContentOpen(true)
+      }
+    }
+    document.addEventListener('expand-day', handler)
+    return () => document.removeEventListener('expand-day', handler)
+  }, [id])
+
+  const { mainContent, summaryText } = useMemo(() => {
     const lines = content.trim().split('\n')
     const summaryIdx = lines.findIndex(l =>
       l.match(/\*\*Суть (дня|периода):\*\*/)
     )
+    const sigIdx = lines.findIndex(l =>
+      l.match(/^\*\*Важность:\s*\d\s*\*\*$/)
+    )
 
+    const excludeIndices = new Set()
+    if (sigIdx >= 0) excludeIndices.add(sigIdx)
+
+    let summaryText = ''
     if (summaryIdx >= 0) {
-      return {
-        daySummary: lines[summaryIdx],
-        mainContent: [...lines.slice(0, summaryIdx), ...lines.slice(summaryIdx + 1)].join('\n').trim(),
-      }
+      excludeIndices.add(summaryIdx)
+      summaryText = lines[summaryIdx]
+        .replace(/^\*\*Суть (дня|периода):\*\*\s*/, '')
+        .trim()
     }
-    return { mainContent: content.trim(), daySummary: null }
+
+    return {
+      summaryText,
+      mainContent: lines.filter((_, i) => !excludeIndices.has(i)).join('\n').trim(),
+    }
   }, [content])
 
   const dateMatches = useMemo(() => date.match(/\d{4}-\d{2}-\d{2}/g) || [], [date])
 
-  const renderedBody = useMemo(() => (
-    <div className="day-card-body">
-      <ReactMarkdown>{mainContent}</ReactMarkdown>
-      {daySummary && (
-        <div className="day-summary">
-          <ReactMarkdown>{daySummary}</ReactMarkdown>
-        </div>
-      )}
-    </div>
-  ), [mainContent, daySummary])
-
-  const handleToggle = useCallback(() => {
-    if (!expanded && !txs && walletAddress && dateMatches.length > 0) {
+  const handleTxToggle = useCallback(() => {
+    if (!txExpanded && !txs && walletAddress && dateMatches.length > 0) {
       setTxLoading(true)
       const dateFrom = dateMatches[0]
       const dateTo = dateMatches.length > 1 ? dateMatches[1] : dateFrom
@@ -157,49 +172,70 @@ const DayCard = memo(function DayCard({ id, date, content, walletAddress, isNew 
         .catch(() => setTxs([]))
         .finally(() => setTxLoading(false))
     }
-    if (expanded) {
+    if (txExpanded) {
       setTxVisible(TX_PAGE_SIZE)
     }
-    setExpanded(v => !v)
-  }, [expanded, txs, walletAddress, dateMatches])
+    setTxExpanded(v => !v)
+  }, [txExpanded, txs, walletAddress, dateMatches])
 
   const remainingTxs = txs ? txs.length - txVisible : 0
+  const sigClass = significance <= 2 ? 'sig-low' : significance >= 4 ? 'sig-high' : 'sig-mid'
 
   return (
-    <div className="day-card" ref={cardRef} id={id}>
-      <div className="day-card-header">
-        <span>
-          {date}
-          {isNew && <span className="new-badge" title="New data">✨ NEW</span>}
+    <div
+      className={`day-card ${contentOpen ? 'day-card-open' : 'day-card-collapsed'} day-card-${sigClass}`}
+      ref={cardRef}
+      id={id}
+    >
+      <div className="day-card-header" onClick={() => setContentOpen(v => !v)}>
+        <span className={`day-card-chevron ${contentOpen ? 'day-card-chevron-open' : ''}`}>
+          &#9656;
         </span>
-        {walletAddress && dateMatches.length > 0 && (
+        <span className="day-card-date">
+          {date}
+          {isNew && <span className="new-badge" title="New data">NEW</span>}
+        </span>
+        {!contentOpen && summaryText && (
+          <span className="day-card-summary-preview" title={summaryText}>
+            {summaryText}
+          </span>
+        )}
+        {contentOpen && walletAddress && dateMatches.length > 0 && (
           <button
-            className={`tx-toggle-btn ${expanded ? 'tx-toggle-expanded' : ''}`}
-            onClick={handleToggle}
+            className={`tx-toggle-btn ${txExpanded ? 'tx-toggle-expanded' : ''}`}
+            onClick={(e) => { e.stopPropagation(); handleTxToggle(); }}
           >
-            {expanded ? 'Hide' : 'Transactions'}
+            {txExpanded ? 'Hide' : 'Transactions'}
           </button>
         )}
       </div>
-      {expanded && (
-        <div className="tx-list">
-          {txLoading && (
-            <div className="tx-loading">Loading...</div>
+
+      <div className={`day-card-collapsible ${contentOpen ? 'day-card-collapsible-open' : ''}`}>
+        <div className="day-card-collapsible-inner">
+          {txExpanded && (
+            <div className="tx-list">
+              {txLoading && <div className="tx-loading">Loading...</div>}
+              {txs && txs.slice(0, txVisible).map((tx, i) => (
+                <TxRow key={tx.tx_hash || i} tx={tx} />
+              ))}
+              {remainingTxs > 0 && (
+                <button
+                  className="tx-show-more"
+                  onClick={() => setTxVisible(v => v + TX_PAGE_SIZE)}
+                >
+                  Show {Math.min(remainingTxs, TX_PAGE_SIZE)} more of {remainingTxs}
+                </button>
+              )}
+            </div>
           )}
-          {txs && txs.slice(0, txVisible).map((tx, i) => (
-            <TxRow key={tx.tx_hash || i} tx={tx} />
-          ))}
-          {remainingTxs > 0 && (
-            <button
-              className="tx-show-more"
-              onClick={() => setTxVisible(v => v + TX_PAGE_SIZE)}
-            >
-              Show {Math.min(remainingTxs, TX_PAGE_SIZE)} more of {remainingTxs}
-            </button>
+
+          {wasVisible && (
+            <div className="day-card-body">
+              <ReactMarkdown>{mainContent}</ReactMarkdown>
+            </div>
           )}
         </div>
-      )}
-      {wasVisible ? renderedBody : <div className="day-card-placeholder" />}
+      </div>
     </div>
   )
 })
@@ -268,6 +304,8 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
             content={section.content}
             walletAddress={walletAddress}
             isNew={oldSectionCount !== null && section._originalIndex >= oldSectionCount}
+            significance={section._significance}
+            defaultOpen={false}
           />
         ))}
       </div>
