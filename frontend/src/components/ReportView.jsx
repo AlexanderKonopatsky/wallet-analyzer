@@ -1,5 +1,6 @@
 import { useState, useMemo, memo, useCallback, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
+import CalendarStrip from './CalendarStrip'
 import './ReportView.css'
 
 function parseReport(markdown) {
@@ -85,7 +86,7 @@ const TxRow = memo(function TxRow({ tx }) {
   )
 })
 
-const DayCard = memo(function DayCard({ date, content, walletAddress, isNew }) {
+const DayCard = memo(function DayCard({ id, date, content, walletAddress, isNew }) {
   const [expanded, setExpanded] = useState(false)
   const [txs, setTxs] = useState(null)
   const [txLoading, setTxLoading] = useState(false)
@@ -165,7 +166,7 @@ const DayCard = memo(function DayCard({ date, content, walletAddress, isNew }) {
   const remainingTxs = txs ? txs.length - txVisible : 0
 
   return (
-    <div className="day-card" ref={cardRef}>
+    <div className="day-card" ref={cardRef} id={id}>
       <div className="day-card-header">
         <span>
           {date}
@@ -256,10 +257,13 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
         </div>
       )}
 
+      {sections.length > 0 && <CalendarStrip sections={sections} />}
+
       <div className="report-sections">
         {sections.map((section, i) => (
           <DayCard
             key={i}
+            id={`day-${section._sortDate}`}
             date={section.date}
             content={section.content}
             walletAddress={walletAddress}
