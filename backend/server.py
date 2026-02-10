@@ -117,6 +117,12 @@ PROJECT_ROOT = Path(__file__).parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 # Store reports inside data/ for Railway single volume
 REPORTS_DIR = DATA_DIR / "reports"
+
+# Ensure directories exist at startup
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+print(f"[Init] Data directory: {DATA_DIR} (exists: {DATA_DIR.exists()})")
+print(f"[Init] Reports directory: {REPORTS_DIR} (exists: {REPORTS_DIR.exists()})")
 TAGS_FILE = DATA_DIR / "wallet_tags.json"
 REFRESH_STATUS_FILE = DATA_DIR / "refresh_status.json"
 EXCLUDED_WALLETS_FILE = DATA_DIR / "excluded_wallets.json"
