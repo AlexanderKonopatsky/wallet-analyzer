@@ -60,7 +60,14 @@ chunks = split_into_chunks(days, max_size=30)
 **LLM Context Management**:
 - **Full context**: all previous "Day summary" (for last chunk)
 - **Limited context**: last N "Day summary" (FULL_CHRONOLOGY_COUNT, default=1)
-- This balances context and token cost
+- **Hierarchical compression** (enabled by default): 3-tier chunk-based grouping
+  - Tier 1 (newest): individual summaries
+  - Tier 2 (middle): groups of 5 → LLM compression
+  - Tier 3 (oldest): groups → super-groups of 3 → double compression
+  - Only complete groups compressed (partial groups remain as individual lines)
+  - Content-hash caching in `compression_cache` state field
+  - Configurable via `.env`: `CONTEXT_COMPRESSION_ENABLED`, `CONTEXT_DAILY_COUNT`, `CONTEXT_WEEKLY_COUNT`, `CONTEXT_TIER2_GROUP_SIZE`, `CONTEXT_TIER3_SUPER_SIZE`
+- This balances context and token cost (plateaus at ~4K tokens for large wallets)
 
 **System Prompt**: Described in `analyze.py` (SYSTEM_PROMPT)
 - Format requirements (day headers, "Day summary")
@@ -84,34 +91,40 @@ response = requests.post(
 
 **State Management**: see `reports/CLAUDE.md`
 
-### categories.py — Wallet Classification
-**Purpose**: Automatic wallet classification (CEX, bridge, protocol, user).
+### categories.py — Wallet Categories Management
+**Purpose**: User-created category management for organizing wallets.
 
 **Key Functions**:
-- `classify_wallet(address, sample_txs)` — classify address
-  - Takes sample transactions for analysis
-  - Sends to LLM with classification prompt
-  - Returns: `{"category": "cex_deposit", "confidence": 0.95, "reasoning": "..."}`
+- `get_all_categories()` — list all user-created categories
+- `create_category(name, color)` — create new category
+- `set_wallet_category(address, category_id)` — assign wallet to category
+- `get_wallet_category(address)` — get wallet's category
 
-**Categories**:
-- `cex_deposit` — exchange deposit address (Binance, Coinbase, etc.)
-- `bridge` — cross-chain bridge (LayerZero, Stargate, etc.)
-- `defi_protocol` — protocol contract (Uniswap router, Aave pool, etc.)
-- `user_wallet` — regular user wallet
-- `unknown` — unable to classify
+See `data/CLAUDE.md` for categories.json format.
 
-**Confidence Threshold**:
-- `>= 0.8` → auto-exclude (if category = cex_deposit / bridge / defi_protocol)
-- `< 0.8` → show to user, don't auto-exclude
+### debank_parser.py — Wallet Classification via DeBank
+**Purpose**: Automatic wallet classification (protocol/contract vs personal wallet) using DeBank data.
 
-**LLM Prompt Example**:
-```
-Classify the wallet based on these transactions:
-[transaction list]
+**Key Functions**:
+- `get_protocol_type(address, timeout)` — fetch wallet info from DeBank
+  - Uses Playwright to scrape DeBank profile page
+  - Returns: `{"protocol": "Clipper", "balance": "$42,839", "success": True}`
+  - If `protocol` is found → contract/protocol (excluded)
+  - If `protocol` is None → personal wallet (not excluded)
 
-Return JSON: {"category": "...", "confidence": 0.0-1.0, "reasoning": "..."}
-Categories: cex_deposit, bridge, defi_protocol, user_wallet, unknown
-```
+**Classification Logic** (in server.py):
+- `classify_wallet_address(address)` — classify address using DeBank
+  - Calls `get_protocol_type(address)`
+  - If protocol found → `{"is_excluded": True, "label": "contract", "name": "Protocol Name"}`
+  - If no protocol → `{"is_excluded": False, "label": "personal"}`
+  - Results cached in `data/excluded_wallets.json`
+
+**Labels**:
+- `contract` — protocol/contract (auto-excluded)
+- `personal` — personal wallet (not excluded)
+- `unknown` — classification failed
+
+**Note**: Requires `playwright install chromium` to be run once after installing dependencies.
 
 ### portfolio.py — Portfolio Aggregation
 **Purpose**: Aggregate statistics by tokens, protocols, chains.

@@ -3,8 +3,6 @@ import './WalletSidebar.css'
 
 const WALLET_ACTIONS = [
   { id: 'report', label: 'Report' },
-  { id: 'analysis', label: 'Analysis' },
-  { id: 'related', label: 'Related' },
   { id: 'profile', label: 'Profile' },
 ]
 

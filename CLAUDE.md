@@ -15,7 +15,8 @@ Full-stack application for analyzing cryptocurrency wallet transactions. Fetches
 │   ├── CLAUDE.md          # 📚 Backend documentation (API, modules, architecture)
 │   ├── main.py            # Cielo API client (fetch transactions)
 │   ├── analyze.py         # AI analysis engine (Gemini via OpenRouter)
-│   ├── categories.py      # LLM wallet classification
+│   ├── categories.py      # Wallet category management
+│   ├── debank_parser.py   # DeBank wallet classification (Protocol detection)
 │   ├── portfolio.py       # Portfolio statistics (Grade A-F, P&L)
 │   └── server.py          # FastAPI REST API + background tasks
 ├── frontend/              # React application
@@ -47,6 +48,9 @@ Full-stack application for analyzing cryptocurrency wallet transactions. Fetches
 # Install dependencies
 pip install -r requirements.txt
 
+# Install Playwright browser (required for DeBank classification)
+playwright install chromium
+
 # Run server (port 8000)
 python backend/server.py
 
@@ -77,15 +81,16 @@ npm run build
 - **Add new wallet**: Frontend → POST `/api/refresh/{wallet}` → auto fetch + analyze
 - **Update wallet**: WalletSidebar refresh button → background task
 - **View report**: ReportView loads `reports/{wallet}.md`
-- **Classify related wallet**: ReportView → "Classify" button → LLM analysis
+- **Classify related wallet**: ReportView → "Classify" button → DeBank protocol detection
 - **Exclude wallet**: Related card → "Exclude" → saved to `excluded_wallets.json`
 
 ### Key API Endpoints
 - `GET /api/wallets` — list of wallets with metadata
 - `GET /api/report/{wallet}` — markdown report + related wallets
-- `POST /api/refresh/{wallet}` — start background refresh (fetch + analyze)
+- `POST /api/refresh/{wallet}` — start background refresh (fetch + analyze + auto-classify related)
 - `GET /api/refresh-status/{wallet}` — refresh status
-- `POST /api/classify-wallet/{address}` — classify via LLM
+- `GET /api/classify-status/{wallet}` — classification progress for related wallets
+- `POST /api/classify-wallet/{address}` — classify single wallet via DeBank
 - `GET /api/portfolio/{wallet}` — Grade A-F, P&L, win rate
 - **Full list**: see [backend/CLAUDE.md](backend/CLAUDE.md)
 
@@ -99,7 +104,8 @@ npm run build
 - Analysis is incremental: only new transactions are processed
 - Background tasks use non-daemon threads (continue independently from browser)
 - When adding a new wallet, fetch + analyze automatically starts
-- Related wallets auto-classify in batches (parallel processing, configurable via `AUTO_CLASSIFY_BATCH_SIZE`)
+- **Related wallets auto-classify in background** after analysis completes (DeBank classification with threading lock for stability)
+- Classification continues even if browser is closed - check status via `/api/classify-status/{wallet}`
 
 ## Environment Variables (.env)
 - `CIELO_API_KEY` — primary Cielo Finance API key
@@ -107,6 +113,39 @@ npm run build
 - `OPENROUTER_API_KEY` — OpenRouter API key for AI analysis
 - `FULL_CHRONOLOGY_COUNT` — number of recent analyses for full context (default: 1)
 - `AUTO_CLASSIFY_BATCH_SIZE` — number of related wallets to classify in parallel (default: 3)
+
+### Context Compression (Advanced)
+- `CONTEXT_COMPRESSION_ENABLED` — enable hierarchical compression (default: true)
+- `CONTEXT_DAILY_COUNT` — Tier 1: number of recent summaries without compression (default: 30)
+- `CONTEXT_WEEKLY_COUNT` — Tier 2: number of summaries to compress into groups (default: 30)
+- `CONTEXT_TIER2_GROUP_SIZE` — summaries per group in Tier 2 (default: 5)
+- `CONTEXT_TIER3_SUPER_SIZE` — groups per super-group in Tier 3 (default: 3)
+
+## Context Compression System
+For large wallets (10K+ transactions), LLM context grows linearly as each chunk receives summaries from all previous chunks. The compression system reduces token usage without losing quality.
+
+### How It Works
+**3-Tier Hierarchical Compression** (chunk-based grouping):
+- **Tier 1** (newest): Last N summaries shown individually (no compression)
+- **Tier 2** (middle): Groups of 5 summaries → LLM compression (2-3 sentences)
+- **Tier 3** (oldest): Groups of 5 → super-groups of 3 → double LLM compression
+
+**Key Features**:
+- Only **complete groups** are compressed (incomplete groups remain as individual lines)
+- LLM calls happen **once per group** (every 5 chunks), not every chunk
+- Content-hash caching prevents re-compression
+- Compression saved to `reports/{wallet}_state.json` → `compression_cache`
+- Context inspection file: `reports/{wallet}_context.md` (updated before each LLM call)
+
+**Example** (72 summaries, defaults):
+- Tier 1: 30 individual lines
+- Tier 2: 6 compressed groups (30÷5)
+- Tier 3: 2 super-compressed blocks (12 groups → 4 super-groups)
+- **Total**: ~40 lines instead of 72
+
+**Token Savings**: For 73-chunk wallet, context plateaus at ~4K input tokens (vs ~18K+ without compression).
+
+Set `CONTEXT_COMPRESSION_ENABLED=false` to disable and revert to flat list behavior.
 
 ## Portfolio Analysis (Grade A-F)
 New module `portfolio.py` replays all transactions chronologically (FIFO cost basis tracking) and calculates:

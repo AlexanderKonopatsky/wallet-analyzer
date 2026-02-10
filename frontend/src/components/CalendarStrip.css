@@ -86,23 +86,50 @@
   color: #21262d;
 }
 
-/* Active day — accent blue */
+/* Significance: low (1-2) — routine, dim steel blue */
+.cal-cell-sig-low {
+  background: #2d4a6f;
+  color: #8ba3bd;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cal-cell-sig-low:hover { background: #3a5f8a; }
+
+/* Significance: mid (3) — notable, standard blue (matches original) */
+.cal-cell-sig-mid {
+  background: #58a6ff;
+  color: #0d1117;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cal-cell-sig-mid:hover { background: #79c0ff; }
+
+/* Significance: high (4-5) — important/key, gold */
+.cal-cell-sig-high {
+  background: #e3b341;
+  color: #0d1117;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cal-cell-sig-high:hover { background: #f0d060; }
+
+/* Fallback: generic active = mid */
 .cal-cell-active {
   background: #58a6ff;
   color: #0d1117;
   font-weight: 600;
   cursor: pointer;
 }
-
-.cal-cell-active:hover {
-  background: #79c0ff;
-}
+.cal-cell-active:hover { background: #79c0ff; }
 
 /* Today ring */
 .cal-cell-today {
   box-shadow: inset 0 0 0 1px #e6edf3;
 }
 
+.cal-cell-today.cal-cell-sig-low,
+.cal-cell-today.cal-cell-sig-mid,
+.cal-cell-today.cal-cell-sig-high,
 .cal-cell-today.cal-cell-active {
   box-shadow: inset 0 0 0 1px #ffffff;
 }

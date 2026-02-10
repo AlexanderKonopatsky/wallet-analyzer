@@ -407,16 +407,17 @@ function App() {
       const res = await fetch(`/api/report/${wallet.toLowerCase()}`)
       if (res.status === 404) {
         setReport(null)
-        setError("Report not found. Click 'Update Data' to fetch and analyze transactions.")
-        return
+        return { missing: true } // Return flag instead of throwing error
       }
       if (!res.ok) throw new Error('Failed to load report')
       const data = await res.json()
       setReport(data)
       processReportData(wallet, data)
+      return { missing: false }
     } catch (err) {
       setError(err.message)
       setReport(null)
+      return { missing: false, error: true }
     } finally {
       setLoading(false)
     }
@@ -635,7 +636,7 @@ function App() {
         if (res.status === 404) {
           // No report exists - this is a new wallet, start refresh automatically
           setLoading(false)
-          setError('New wallet. Starting fetch and analysis...')
+          setError('Starting fetch and analysis...')
           await startRefresh(wallet)
         } else if (!res.ok) {
           throw new Error('Failed to load report')
@@ -670,7 +671,7 @@ function App() {
           onSaveTag={saveTag}
           onRefresh={refreshWallets}
           onBulkRefresh={startBulkRefresh}
-          onAction={(wallet, actionId) => {
+          onAction={async (wallet, actionId) => {
             if (actionId === 'related') {
               fetchRelatedWallets(wallet)
             } else if (actionId === 'profile') {
@@ -680,7 +681,12 @@ function App() {
             } else if (actionId === 'report') {
               setActiveView('report')
               setProfile(null)
-              loadReport(wallet)
+              const result = await loadReport(wallet)
+              // If report is missing, automatically start fetch
+              if (result?.missing) {
+                setError('Starting fetch and analysis...')
+                startRefresh(wallet)
+              }
             }
           }}
         />
@@ -732,100 +738,6 @@ function App() {
         </div>
       </div>
 
-      {/* Related wallets modal */}
-      {(relatedData || relatedLoading) && (
-        <div className="modal-overlay" onClick={closeRelatedModal}>
-          <div className="modal-content" onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>Related Wallets</h2>
-              <button className="modal-close" onClick={closeRelatedModal}>&times;</button>
-            </div>
-            <div className="modal-subheader">
-              {relatedWallet.slice(0, 6)}...{relatedWallet.slice(-4)}
-            </div>
-
-            {relatedLoading && (
-              <div className="modal-loading">Analyzing transactions...</div>
-            )}
-
-            {relatedData?.error && (
-              <div className="error-banner">{relatedData.error}</div>
-            )}
-
-            {relatedData && !relatedData.error && (
-              <>
-                <div className="related-summary">
-                  Found <strong>{relatedData.related_count}</strong> related wallets
-                  <span className="related-summary-hint">
-                    (bidirectional transfers: sent + received)
-                  </span>
-                  {classifyingAddrs.length > 0 && (
-                    <span className="related-classifying-hint">
-                      Classifying {classifyingAddrs.length} wallet{classifyingAddrs.length > 1 ? 's' : ''}...
-                    </span>
-                  )}
-                </div>
-
-                {relatedData.excluded_count > 0 && (
-                  <div className="related-excluded-bar">
-                    <span>{relatedData.excluded_count} wallet{relatedData.excluded_count > 1 ? 's' : ''} excluded</span>
-                    <button onClick={() => setShowExcluded(v => !v)}>
-                      {showExcluded ? 'Hide' : 'Show'}
-                    </button>
-                  </div>
-                )}
-
-                {relatedData.related_count === 0 && !relatedData.excluded_count && (
-                  <div className="related-empty">
-                    No wallets with bidirectional transfers found.
-                  </div>
-                )}
-
-                <div className="related-list">
-                  {relatedData.related_wallets.map(rw => (
-                    <RelatedCard
-                      key={rw.address}
-                      rw={rw}
-                      mainWallet={relatedWallet}
-                      classificationOverride={classResults[rw.address]}
-                      classifyingNow={classifyingAddrs.includes(rw.address)}
-                    />
-                  ))}
-                </div>
-
-                {showExcluded && relatedData.excluded_wallets?.length > 0 && (
-                  <div className="related-excluded-section">
-                    <div className="related-excluded-header">Excluded Wallets</div>
-                    {relatedData.excluded_wallets.map(rw => (
-                      <div key={rw.address} className="related-card related-card-excluded">
-                        <div className="related-card-top">
-                          <span className="related-card-address">
-                            {rw.address.slice(0, 10)}...{rw.address.slice(-6)}
-                          </span>
-                          <div className="related-card-top-right">
-                            <span className={`classification-badge classification-${rw.exclusion?.label}`}>
-                              {rw.exclusion?.label}
-                            </span>
-                            {rw.exclusion?.name && (
-                              <span className="classification-name">{rw.exclusion.name}</span>
-                            )}
-                            <button
-                              className="related-restore-btn"
-                              onClick={() => handleRestoreWallet(rw.address)}
-                            >
-                              Restore
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   )
 }

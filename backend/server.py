@@ -9,8 +9,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # Fix Windows encoding for Unicode characters in print() from imported modules
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+# line_buffering=True ensures logs appear immediately (important for background threads)
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True)
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,6 +34,7 @@ from analyze import (
     call_llm,
     parse_llm_response,
     extract_day_summaries,
+    build_context_for_llm,
     SYSTEM_PROMPT,
     FULL_CHRONOLOGY_COUNT,
 )
@@ -48,6 +50,7 @@ from categories import (
     get_category_stats,
     get_wallets_by_category,
 )
+from debank_parser import get_protocol_type
 
 CHAIN_EXPLORERS = {
     "ethereum": "https://etherscan.io/tx/",
@@ -98,26 +101,11 @@ PROFILE_SYSTEM_PROMPT = """Ты — опытный ончейн-аналитик
 Не пересказывай транзакции. Анализируй поведение, читай между строк, делай выводы. Ссылайся на конкретные события из отчёта как доказательства. Пиши на русском, используй markdown."""
 
 # Wallet classification settings
-CLASSIFY_MODEL = "google/gemini-3-flash-preview"
-AUTO_CLASSIFY_BATCH_SIZE = int(os.getenv("AUTO_CLASSIFY_BATCH_SIZE", 3))
-CLASSIFY_SYSTEM_PROMPT = """You are a blockchain address classifier. Given an Ethereum-compatible wallet address and some context about its transaction behavior, determine if this address belongs to a known protocol, bridge, exchange, contract, DEX router, MEV bot, or dust spammer — i.e., NOT a personal wallet.
+# Note: DeBank classification uses a lock, so parallel requests are serialized anyway
+AUTO_CLASSIFY_BATCH_SIZE = int(os.getenv("AUTO_CLASSIFY_BATCH_SIZE", 1))
 
-Use the web search results to identify the address. Check if it matches any known protocol, bridge, exchange, or smart contract.
-
-Respond ONLY with a JSON object (no markdown fencing, no extra text):
-{
-  "is_excluded": true or false,
-  "label": "bridge" | "exchange" | "contract" | "dex_router" | "mev_bot" | "dust_spammer" | "personal" | "unknown",
-  "name": "Human-readable name if known (e.g. 'Across Protocol', 'Binance Hot Wallet'), otherwise empty string",
-  "confidence": "high" | "medium" | "low",
-  "reasoning": "Brief explanation of why you classified it this way"
-}
-
-Rules:
-- Only set is_excluded to true if confidence is medium or high
-- If unsure, set is_excluded to false and label to "unknown"
-- "personal" means it appears to be a regular user wallet
-- Consider transaction patterns: bridges often handle many different tokens, exchanges have very high volume, contracts have programmatic behavior"""
+# DeBank classification lock (Playwright is not thread-safe)
+debank_lock = threading.Lock()
 
 # Background task status tracking: {wallet: {status, detail, thread_id}}
 refresh_tasks: dict[str, dict] = {}
@@ -206,6 +194,7 @@ def run_analysis_pipeline(wallet: str) -> None:
     processed_keys = set(state["processed_tx_keys"])
     pending_keys = set(state.get("pending_tx_keys", []))
     start_chunk = state["chunk_index"]
+    compression_cache = state.get("compression_cache", {"groups": {}, "super_groups": {}})
 
     resuming = bool(pending_keys and start_chunk > 0)
 
@@ -223,6 +212,7 @@ def run_analysis_pipeline(wallet: str) -> None:
                     "chronology_parts": chronology_parts,
                     "processed_tx_keys": all_keys,
                     "pending_tx_keys": [],
+                    "compression_cache": compression_cache,
                 })
             return
 
@@ -241,36 +231,14 @@ def run_analysis_pipeline(wallet: str) -> None:
 
         tx_text = "\n".join(formatted_lines)
 
-        # Build context
-        if chronology_parts:
-            context_sections = []
+        # Build context: compressed summaries + last N full chronologies
+        context = build_context_for_llm(chronology_parts, compression_cache)
 
-            if len(chronology_parts) > FULL_CHRONOLOGY_COUNT:
-                old_parts = chronology_parts[:-FULL_CHRONOLOGY_COUNT]
-                recent_parts = chronology_parts[-FULL_CHRONOLOGY_COUNT:]
-            else:
-                old_parts = []
-                recent_parts = chronology_parts
-
-            if old_parts:
-                all_summaries = []
-                for part in old_parts:
-                    all_summaries.extend(extract_day_summaries(part))
-                if all_summaries:
-                    context_sections.append(
-                        "## Краткий контекст предыдущей активности:\n"
-                        + "\n".join(f"- {s}" for s in all_summaries)
-                    )
-
-            if recent_parts:
-                context_sections.append(
-                    "## Подробная хронология последних дней:\n\n"
-                    + "\n\n".join(recent_parts)
-                )
-
-            context = "\n\n".join(context_sections)
-        else:
-            context = "## Контекст предыдущей активности:\nЭто начало анализа, предыдущих данных нет."
+        # Save context for inspection
+        from analyze import REPORTS_DIR
+        context_path = REPORTS_DIR / f"{wallet.lower()}_context.md"
+        with open(context_path, "w", encoding="utf-8") as f:
+            f.write(f"# LLM Context for chunk {i + 1}/{total_chunks}\n\n{context}")
 
         user_prompt = f"""{context}
 
@@ -290,6 +258,7 @@ def run_analysis_pipeline(wallet: str) -> None:
             "chronology_parts": chronology_parts,
             "processed_tx_keys": list(processed_keys),
             "pending_tx_keys": batch_keys,
+            "compression_cache": compression_cache,
         })
 
     processed_keys.update(batch_keys)
@@ -298,6 +267,7 @@ def run_analysis_pipeline(wallet: str) -> None:
         "chronology_parts": chronology_parts,
         "processed_tx_keys": list(processed_keys),
         "pending_tx_keys": [],
+        "compression_cache": compression_cache,
     })
 
     save_report(wallet, chronology_parts)
@@ -308,6 +278,7 @@ def background_refresh(wallet: str) -> None:
     wallet_lower = wallet.lower()
     try:
         # Step 1: Fetch transactions
+        print(f"[Refresh] Step 1: Fetching transactions for {wallet_lower}", flush=True)
         refresh_tasks[wallet_lower] = {"status": "fetching", "detail": "Fetching transactions from API..."}
         save_refresh_status(refresh_tasks)
 
@@ -319,18 +290,39 @@ def background_refresh(wallet: str) -> None:
             all_transactions.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
             save_data(wallet, all_transactions)
 
+        # Check if we have any data at all (either newly fetched or existing)
+        data_file = DATA_DIR / f"{wallet_lower}.json"
+        if not data_file.exists():
+            # API returned pending/empty and no existing data - cannot proceed
+            raise Exception("No transaction data available yet. Data is still loading from API. Please try again in a few minutes.")
+
         # Step 2: Analyze
+        print(f"[Refresh] Step 2: Analyzing transactions for {wallet_lower}", flush=True)
         refresh_tasks[wallet_lower] = {"status": "analyzing", "detail": "Analyzing transactions with AI..."}
         save_refresh_status(refresh_tasks)
         run_analysis_pipeline(wallet)
 
+        print(f"[Refresh] Step 2 done: Analysis complete for {wallet_lower}", flush=True)
         refresh_tasks[wallet_lower] = {"status": "done", "detail": "Refresh complete!"}
         save_refresh_status(refresh_tasks)
+
+        # Step 3: Auto-classify related wallets in background
+        print(f"[Refresh] Step 3: Starting auto-classification for {wallet_lower}", flush=True)
+        classify_thread = threading.Thread(
+            target=classify_related_wallets_background,
+            args=(wallet_lower,),
+            daemon=False  # Non-daemon so it continues after browser closes
+        )
+        task_key = f"classify_{wallet_lower}"
+        active_threads[task_key] = classify_thread
+        classify_thread.start()
+
     except Exception as e:
+        print(f"[Refresh] ERROR for {wallet_lower}: {e}", flush=True)
         refresh_tasks[wallet_lower] = {"status": "error", "detail": str(e)}
         save_refresh_status(refresh_tasks)
     finally:
-        # Clean up thread reference
+        # Clean up thread reference (but not classify thread - it runs independently)
         active_threads.pop(wallet_lower, None)
 
 
@@ -603,76 +595,218 @@ def refresh_portfolio(wallet: str):
 
 
 def classify_wallet_address(address: str, context: str = "") -> dict:
-    """Use LLM with web search to classify whether a wallet is a known contract/bridge/exchange/etc."""
-    user_prompt = f"Classify this blockchain address: {address}"
-    if context:
-        user_prompt += f"\n\nTransaction context:\n{context}"
+    """Use DeBank to classify whether a wallet is a known contract/protocol or personal wallet.
+
+    Uses a lock to ensure only one DeBank request at a time (Playwright is not thread-safe).
+    """
+    # Acquire lock to prevent parallel Playwright instances
+    with debank_lock:
+        try:
+            print(f"[Classify DeBank] Fetching info for {address}...")
+            result = get_protocol_type(address, timeout=30000)
+
+            if not result.get("success"):
+                error_msg = result.get("error", "Unknown error")
+                print(f"[Classify DeBank] Failed to fetch info: {error_msg}")
+                return {
+                    "is_excluded": False,
+                    "label": "unknown",
+                    "name": "",
+                    "reasoning": f"DeBank fetch failed: {error_msg}",
+                }
+
+            protocol = result.get("protocol")
+            balance = result.get("balance")
+
+            # If protocol is found, it's a contract/protocol (exclude it)
+            if protocol:
+                print(f"[Classify DeBank] Found protocol: {protocol}")
+                reasoning = f"DeBank identifies this as a protocol: {protocol}"
+                if balance:
+                    reasoning += f" (Balance: {balance})"
+
+                return {
+                    "is_excluded": True,
+                    "label": "contract",
+                    "name": protocol,
+                    "reasoning": reasoning,
+                }
+            else:
+                # No protocol = personal wallet
+                print(f"[Classify DeBank] No protocol found, likely personal wallet")
+                reasoning = "DeBank shows no protocol tag - appears to be a personal wallet"
+                if balance:
+                    reasoning += f" (Balance: {balance})"
+
+                return {
+                    "is_excluded": False,
+                    "label": "personal",
+                    "name": "",
+                    "reasoning": reasoning,
+                }
+
+        except Exception as e:
+            print(f"[Classify DeBank] Classification failed for {address}: {e}")
+            return {
+                "is_excluded": False,
+                "label": "unknown",
+                "name": "",
+                "reasoning": f"DeBank classification error: {str(e)}",
+            }
+
+
+def classify_related_wallets_background(wallet: str) -> None:
+    """Background task: classify all related wallets for a given wallet.
+
+    This runs automatically after wallet refresh/analysis and continues
+    even if the user closes the browser.
+    """
+    wallet_lower = wallet.lower()
+    task_key = f"classify_{wallet_lower}"
 
     try:
-        print(f"[Classify LLM] Calling LLM for {address}...")
-        response = call_llm(
-            CLASSIFY_SYSTEM_PROMPT,
-            user_prompt,
-            model=CLASSIFY_MODEL,
-            max_tokens=512,
-            plugins=[{"id": "web", "max_results": 3}],
-        )
-        print(f"[Classify LLM] LLM response received for {address}")
-        # Parse JSON from response (handle possible markdown fencing)
-        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", response.strip())
-        json_match = re.search(r"\{[\s\S]*\}", cleaned)
-        if json_match:
-            result = json.loads(json_match.group())
-            print(f"[Classify LLM] Parsed result: {result}")
-            return result
-        print(f"[Classify LLM] Failed to parse JSON from response")
+        print(f"[Auto-classify] Starting background classification for {wallet_lower}")
+
+        # Verify data file exists before proceeding
+        data_file = DATA_DIR / f"{wallet_lower}.json"
+        if not data_file.exists():
+            print(f"[Auto-classify] Data file not found for {wallet_lower}, skipping classification")
+            refresh_tasks[task_key] = {
+                "status": "error",
+                "detail": "Transaction data not found",
+                "progress": "0/0"
+            }
+            save_refresh_status(refresh_tasks)
+            return
+
+        # Update status
+        refresh_tasks[task_key] = {
+            "status": "classifying",
+            "detail": "Finding related wallets...",
+            "progress": "0/0"
+        }
+        save_refresh_status(refresh_tasks)
+
+        # Load transactions and find related wallets
+        raw_txs = load_transactions(wallet_lower)
+        if not raw_txs:
+            print(f"[Auto-classify] No transactions found for {wallet_lower}")
+            refresh_tasks[task_key] = {
+                "status": "done",
+                "detail": "No transactions found",
+                "progress": "0/0"
+            }
+            save_refresh_status(refresh_tasks)
+            return
+
+        txs = filter_transactions(raw_txs)
+
+        # Track related addresses (same logic as /api/related-wallets)
+        sent_to: dict[str, list] = {}
+        received_from: dict[str, list] = {}
+
+        for tx in txs:
+            if tx.get("tx_type") != "transfer":
+                continue
+
+            frm = (tx.get("from") or "").lower()
+            to = (tx.get("to") or "").lower()
+
+            if frm == wallet_lower and to and to != wallet_lower:
+                sent_to.setdefault(to, []).append(tx)
+            elif to == wallet_lower and frm and frm != wallet_lower:
+                received_from.setdefault(frm, []).append(tx)
+
+        # Find bidirectional addresses
+        bidirectional = set(sent_to.keys()) & set(received_from.keys())
+        related_addresses = list(bidirectional)
+
+        if not related_addresses:
+            print(f"[Auto-classify] No related wallets found for {wallet_lower}")
+            refresh_tasks[task_key] = {
+                "status": "done",
+                "detail": "No related wallets found",
+                "progress": "0/0"
+            }
+            save_refresh_status(refresh_tasks)
+            return
+
+        print(f"[Auto-classify] Found {len(related_addresses)} related wallets")
+
+        # Load existing classifications
+        classified = load_excluded_wallets()
+
+        # Filter out already classified
+        to_classify = [addr for addr in related_addresses if addr not in classified]
+
+        if not to_classify:
+            print(f"[Auto-classify] All {len(related_addresses)} wallets already classified")
+            refresh_tasks[task_key] = {
+                "status": "done",
+                "detail": f"All {len(related_addresses)} wallets already classified",
+                "progress": f"{len(related_addresses)}/{len(related_addresses)}"
+            }
+            save_refresh_status(refresh_tasks)
+            return
+
+        print(f"[Auto-classify] Classifying {len(to_classify)} new wallets (skipping {len(related_addresses) - len(to_classify)} cached)")
+
+        # Classify each wallet
+        for i, address in enumerate(to_classify, 1):
+            try:
+                # Update progress
+                refresh_tasks[task_key] = {
+                    "status": "classifying",
+                    "detail": f"Classifying {address[:10]}... ({i}/{len(to_classify)})",
+                    "progress": f"{i}/{len(to_classify)}"
+                }
+                save_refresh_status(refresh_tasks)
+
+                print(f"[Auto-classify] [{i}/{len(to_classify)}] Classifying {address}")
+
+                # Classify using DeBank (with lock)
+                classification = classify_wallet_address(address)
+
+                # Save result
+                is_excluded = classification.get("is_excluded", False)
+                classified[address] = {
+                    "is_excluded": is_excluded,
+                    "label": classification.get("label", "unknown"),
+                    "name": classification.get("name", ""),
+                    "reason": classification.get("reasoning", ""),
+                    "source": "debank_auto",
+                    "classified_at": datetime.now(timezone.utc).isoformat(),
+                }
+                save_excluded_wallets(classified)
+
+                print(f"[Auto-classify] [{i}/{len(to_classify)}] {address} → {classification.get('label')} (excluded: {is_excluded})")
+
+            except Exception as e:
+                print(f"[Auto-classify] Error classifying {address}: {e}")
+                # Continue with next wallet even if one fails
+                continue
+
+        # Done
+        total = len(related_addresses)
+        refresh_tasks[task_key] = {
+            "status": "done",
+            "detail": f"Classified {len(to_classify)} wallets ({total - len(to_classify)} were cached)",
+            "progress": f"{total}/{total}"
+        }
+        save_refresh_status(refresh_tasks)
+        print(f"[Auto-classify] Done! Classified {len(to_classify)} new wallets for {wallet_lower}")
+
     except Exception as e:
-        print(f"[Classify LLM] Classification failed for {address}: {e}")
-
-    return {
-        "is_excluded": False,
-        "label": "unknown",
-        "name": "",
-        "confidence": "low",
-        "reasoning": "Classification failed",
-    }
-
-
-def build_classification_context(address: str) -> str:
-    """Build transaction context for a wallet address from existing data."""
-    context_parts = []
-    if not DATA_DIR.exists():
-        return ""
-
-    for filepath in DATA_DIR.glob("*.json"):
-        if filepath.name in ("wallet_tags.json", "categories.json", "refresh_status.json", "excluded_wallets.json"):
-            continue
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            txs = data.get("transactions", [])
-            relevant = [
-                tx for tx in txs
-                if (tx.get("from", "").lower() == address or tx.get("to", "").lower() == address)
-                and tx.get("tx_type") == "transfer"
-            ]
-            if relevant:
-                symbols = set()
-                chains = set()
-                for tx in relevant[:20]:
-                    sym = tx.get("symbol", tx.get("token_symbol", ""))
-                    if sym:
-                        symbols.add(sym)
-                    chain = tx.get("chain", "")
-                    if chain:
-                        chains.add(chain)
-                context_parts.append(
-                    f"Found in {len(relevant)} transfers, tokens: {', '.join(symbols)}, chains: {', '.join(chains)}"
-                )
-        except Exception:
-            continue
-
-    return "; ".join(context_parts[:5])
+        print(f"[Auto-classify] Failed for {wallet_lower}: {e}")
+        refresh_tasks[task_key] = {
+            "status": "error",
+            "detail": str(e),
+            "progress": "0/0"
+        }
+        save_refresh_status(refresh_tasks)
+    finally:
+        # Clean up thread reference
+        active_threads.pop(task_key, None)
 
 
 @app.get("/api/excluded-wallets")
@@ -716,7 +850,7 @@ def remove_excluded_wallet(address: str):
 
 @app.post("/api/classify-wallet/{address:path}")
 def classify_wallet(address: str):
-    """Classify a wallet address using LLM with web search. Auto-excludes if confident."""
+    """Classify a wallet address using DeBank. Auto-excludes protocols/contracts."""
     address = address.lower()
     print(f"[Classify] Request for {address}")
 
@@ -726,22 +860,18 @@ def classify_wallet(address: str):
         print(f"[Classify] Cache hit for {address}: {classified[address]['label']}")
         return {"address": address, "cached": True, **classified[address]}
 
-    print(f"[Classify] Cache miss, calling LLM for {address}")
-    # Build context and classify
-    context = build_classification_context(address)
-    classification = classify_wallet_address(address, context)
+    print(f"[Classify] Cache miss, calling DeBank for {address}")
+    # Classify using DeBank
+    classification = classify_wallet_address(address)
 
     # Save ALL classification results as cache (both excluded and personal)
-    is_excluded = bool(
-        classification.get("is_excluded")
-        and classification.get("confidence") in ("medium", "high")
-    )
+    is_excluded = classification.get("is_excluded", False)
     classified[address] = {
         "is_excluded": is_excluded,
         "label": classification.get("label", "unknown"),
         "name": classification.get("name", ""),
         "reason": classification.get("reasoning", ""),
-        "source": "llm",
+        "source": "debank",
         "classified_at": datetime.now(timezone.utc).isoformat(),
     }
     save_excluded_wallets(classified)
@@ -970,6 +1100,15 @@ def get_refresh_status(wallet: str):
     """Check refresh progress for a wallet."""
     wallet_lower = wallet.lower()
     status = refresh_tasks.get(wallet_lower, {"status": "idle", "detail": ""})
+    return status
+
+
+@app.get("/api/classify-status/{wallet}")
+def get_classify_status(wallet: str):
+    """Check classification progress for related wallets of a wallet."""
+    wallet_lower = wallet.lower()
+    task_key = f"classify_{wallet_lower}"
+    status = refresh_tasks.get(task_key, {"status": "idle", "detail": "", "progress": "0/0"})
     return status
 
 

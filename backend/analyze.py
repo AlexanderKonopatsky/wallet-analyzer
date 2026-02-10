@@ -1,6 +1,8 @@
+import hashlib
 import json
 import os
 import re
+import time
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -18,6 +20,11 @@ DUST_THRESHOLD_USD = 1.0
 CHUNK_MAX_TRANSACTIONS = 30
 MAX_CONTEXT_SUMMARIES = None  # None = все "Суть дня", или число для ограничения на больших кошельках
 FULL_CHRONOLOGY_COUNT = int(os.getenv("FULL_CHRONOLOGY_COUNT", 1))
+CONTEXT_COMPRESSION_ENABLED = os.getenv("CONTEXT_COMPRESSION_ENABLED", "true").lower() in ("true", "1", "yes")
+CONTEXT_DAILY_COUNT = int(os.getenv("CONTEXT_DAILY_COUNT", 30))
+CONTEXT_WEEKLY_COUNT = int(os.getenv("CONTEXT_WEEKLY_COUNT", 30))
+TIER2_GROUP_SIZE = int(os.getenv("CONTEXT_TIER2_GROUP_SIZE", 5))
+TIER3_SUPER_SIZE = int(os.getenv("CONTEXT_TIER3_SUPER_SIZE", 3))
 DATA_DIR = Path(__file__).parent.parent / "data"
 REPORTS_DIR = Path(__file__).parent.parent / "reports"
 
@@ -37,6 +44,18 @@ SYSTEM_PROMPT = """\
 - После описания каждого дня ОБЯЗАТЕЛЬНО добавь строку \
 «**Суть дня:** ...» — одно предложение, резюмирующее главное действие/цель дня. \
 Обязательно указывай ключевые суммы в долларах.
+- Сразу после строки «Суть дня» добавь строку оценки важности дня: \
+«**Важность: N**», где N — число от 1 до 5:
+  - 1 = рутина: пополнение газа, пылевые переводы, мелкое обслуживание
+  - 2 = обычный: стандартные свопы, регулярные переводы
+  - 3 = заметный: интересные сделки, значимые суммы, новые платформы
+  - 4 = важный: крупные операции, заметные прибыли/убытки, сложные стратегии
+  - 5 = ключевой: масштабные операции, смена стратегии, исключительные прибыли/убытки
+- Используй эмодзи умеренно (1-2 на секцию дня) для ключевых действий \
+в тексте описания и в строке «Суть дня». Примеры уместных эмодзи: \
+🔄 свопы, 🌉 мосты, 💰 крупные суммы, 📈 прибыль, 📉 убыток, \
+🏦 лендинг, 💸 переводы, 🎯 стратегические действия, ⚡ быстрые операции. \
+Не перегружай текст эмодзи — они должны выделять только ключевые моменты.
 - Не придумывай то, чего нет в данных.
 """
 
@@ -333,18 +352,30 @@ def call_llm(system_prompt: str, user_prompt: str, model: str = None, max_tokens
     }
     if plugins:
         payload["plugins"] = plugins
-    response = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=120,
-    )
-    response.raise_for_status()
-    data = response.json()
-    return data["choices"][0]["message"]["content"]
+
+    max_retries = 5
+    delay = 5
+
+    for attempt in range(max_retries + 1):
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://github.com/your-username/defi-wallet-analyzer",
+                "X-Title": "DeFi Wallet Analyzer",
+            },
+            json=payload,
+            timeout=120,
+        )
+        if response.status_code == 429 and attempt < max_retries:
+            print(f"  Rate limited, waiting {delay}s...")
+            time.sleep(delay)
+            delay *= 2
+            continue
+        response.raise_for_status()
+        data = response.json()
+        return data["choices"][0]["message"]["content"]
 
 
 def parse_llm_response(text: str) -> str:
@@ -369,6 +400,212 @@ def extract_day_summaries(chronology: str) -> list:
     return summaries
 
 
+# ── Context compression ──────────────────────────────────────────────────
+COMPRESS_PROMPT = """\
+Сожми дневные сводки активности криптокошелька в одно краткое резюме (2-3 предложения).
+Сохрани: ключевые действия, суммы в $, платформы, токены, чейны.
+Не добавляй ничего от себя. Отвечай ТОЛЬКО текстом резюме, без заголовков и маркеров."""
+
+
+def parse_summary_date(summary: str) -> tuple[str, str]:
+    """Parse 'YYYY-MM-DD: text' into (date_str, text)."""
+    match = re.match(r"^(\d{4}-\d{2}-\d{2}):\s*(.+)$", summary)
+    if match:
+        return match.group(1), match.group(2)
+    return "", summary
+
+
+def _content_hash(texts: list[str]) -> str:
+    """Generate a short hash of text content for stable cache keys."""
+    content = "\n".join(texts)
+    return hashlib.md5(content.encode()).hexdigest()[:12]
+
+
+def _compress_via_llm(summaries_text: str) -> str:
+    """Call LLM to compress a group of summaries into 2-3 sentences."""
+    try:
+        return call_llm(COMPRESS_PROMPT, summaries_text, max_tokens=300)
+    except Exception as e:
+        print(f"  Compression LLM error: {e}, using fallback")
+        return summaries_text
+
+
+def _compress_group(summaries: list[str], cache: dict = None) -> str:
+    """Compress a group of summaries into a single text via LLM, with content-hash caching."""
+    cache_key = _content_hash(summaries)
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
+
+    input_text = "\n".join(f"- {s}" for s in summaries)
+    compressed = _compress_via_llm(input_text).strip()
+
+    if cache is not None:
+        cache[cache_key] = compressed
+    return compressed
+
+
+def _get_date_range(summaries: list[str]) -> str:
+    """Extract date range label from a list of summaries."""
+    dates = []
+    for s in summaries:
+        date_str, _ = parse_summary_date(s)
+        if date_str:
+            dates.append(date_str)
+    if not dates:
+        return "?"
+    if len(dates) == 1 or dates[0] == dates[-1]:
+        return dates[0]
+    return f"{dates[0]} — {dates[-1]}"
+
+
+def _apply_hierarchical_compression(all_summaries: list[str], cache: dict = None) -> list[str]:
+    """Apply 3-tier chunk-based compression.
+
+    Groups are fixed from the beginning of the list (stable for caching).
+    Only COMPLETE groups are compressed — incomplete groups shown as individual lines.
+    This means LLM compression calls happen only every TIER2_GROUP_SIZE chunks.
+
+    Tier 1 (newest CONTEXT_DAILY_COUNT): individual summaries as-is
+    Tier 2 (next ~CONTEXT_WEEKLY_COUNT): full groups of TIER2_GROUP_SIZE → LLM compression
+    Tier 3 (oldest): full groups → full super-groups of TIER3_SUPER_SIZE → double compression
+    """
+    total = len(all_summaries)
+
+    # Tier 1: last N summaries shown individually
+    tier1_count = min(CONTEXT_DAILY_COUNT, total)
+    tier1_summaries = all_summaries[-tier1_count:]
+    remaining = all_summaries[:-tier1_count] if tier1_count < total else []
+
+    if not remaining:
+        return tier1_summaries
+
+    group_cache = cache.get("groups", {}) if cache else None
+    super_cache = cache.get("super_groups", {}) if cache else None
+
+    # Build fixed groups from the beginning (stable alignment for caching)
+    groups = []
+    for i in range(0, len(remaining), TIER2_GROUP_SIZE):
+        groups.append(remaining[i:i + TIER2_GROUP_SIZE])
+
+    # Split groups into Tier 2 and Tier 3
+    tier2_group_count = max(1, CONTEXT_WEEKLY_COUNT // TIER2_GROUP_SIZE)
+    if len(groups) <= tier2_group_count:
+        tier2_groups = groups
+        tier3_groups = []
+    else:
+        tier2_groups = groups[-tier2_group_count:]
+        tier3_groups = groups[:-tier2_group_count]
+
+    result = []
+
+    # Tier 3: two-level compression (summaries → groups → super-groups)
+    # Only compress complete groups and complete super-groups
+    if tier3_groups:
+        # Step 1: compress only full groups, keep incomplete as individual lines
+        intermediate = []
+        for group in tier3_groups:
+            if len(group) == TIER2_GROUP_SIZE:
+                compressed = _compress_group(group, group_cache)
+                date_range = _get_date_range(group)
+                intermediate.append((date_range, compressed))
+            else:
+                result.extend(group)
+
+        # Step 2: form super-groups only from complete sets of TIER3_SUPER_SIZE
+        full_super_count = len(intermediate) // TIER3_SUPER_SIZE
+        for i in range(full_super_count):
+            start = i * TIER3_SUPER_SIZE
+            super_items = intermediate[start:start + TIER3_SUPER_SIZE]
+
+            first_date = super_items[0][0].split(" — ")[0]
+            last_parts = super_items[-1][0].split(" — ")
+            last_date = last_parts[-1] if len(last_parts) > 1 else last_parts[0]
+            date_range = f"{first_date} — {last_date}"
+
+            super_input = [f"{dr}: {t}" for dr, t in super_items]
+            cache_key = _content_hash(super_input)
+            if super_cache is not None and cache_key in super_cache:
+                result.append(f"{date_range}: {super_cache[cache_key]}")
+            else:
+                input_text = "\n".join(f"- {s}" for s in super_input)
+                compressed = _compress_via_llm(input_text).strip()
+                if super_cache is not None:
+                    super_cache[cache_key] = compressed
+                result.append(f"{date_range}: {compressed}")
+
+        # Remaining compressed groups that don't form a full super-group
+        for dr, text in intermediate[full_super_count * TIER3_SUPER_SIZE:]:
+            result.append(f"{dr}: {text}")
+
+    # Tier 2: single-level compression, only full groups
+    for group in tier2_groups:
+        if len(group) == TIER2_GROUP_SIZE:
+            compressed = _compress_group(group, group_cache)
+            date_range = _get_date_range(group)
+            result.append(f"{date_range}: {compressed}")
+        else:
+            result.extend(group)
+
+    # Tier 1: no compression
+    result.extend(tier1_summaries)
+
+    # Save cache back
+    if cache is not None:
+        if group_cache is not None:
+            cache["groups"] = group_cache
+        if super_cache is not None:
+            cache["super_groups"] = super_cache
+
+    return result
+
+
+def build_context_for_llm(chronology_parts: list[str], compression_cache: dict = None) -> str:
+    """Build LLM context from chronology parts with optional hierarchical compression.
+
+    Args:
+        chronology_parts: list of chronology texts from previous chunks
+        compression_cache: dict for caching compressed summaries (mutated in-place).
+            Structure: {"weekly": {"2024-W03": "..."}, "monthly": {"2024-01": "..."}}
+    """
+    if not chronology_parts:
+        return "## Контекст предыдущей активности:\nЭто начало анализа, предыдущих данных нет."
+
+    context_sections = []
+
+    if len(chronology_parts) > FULL_CHRONOLOGY_COUNT:
+        old_parts = chronology_parts[:-FULL_CHRONOLOGY_COUNT]
+        recent_parts = chronology_parts[-FULL_CHRONOLOGY_COUNT:]
+    else:
+        old_parts = []
+        recent_parts = chronology_parts
+
+    if old_parts:
+        all_summaries = []
+        for part in old_parts:
+            all_summaries.extend(extract_day_summaries(part))
+
+        if MAX_CONTEXT_SUMMARIES is not None:
+            all_summaries = all_summaries[-MAX_CONTEXT_SUMMARIES:]
+
+        if all_summaries:
+            if CONTEXT_COMPRESSION_ENABLED:
+                lines = _apply_hierarchical_compression(all_summaries, compression_cache)
+            else:
+                lines = all_summaries
+            context_sections.append(
+                "## Краткий контекст предыдущей активности:\n"
+                + "\n".join(f"- {s}" for s in lines)
+            )
+
+    if recent_parts:
+        context_sections.append(
+            "## Подробная хронология последних дней:\n\n"
+            + "\n\n".join(recent_parts)
+        )
+
+    return "\n\n".join(context_sections)
+
+
 # ── State management ───────────────────────────────────────────────────────
 def load_state(wallet: str) -> dict:
     state_path = REPORTS_DIR / f"{wallet.lower()}_state.json"
@@ -378,12 +615,20 @@ def load_state(wallet: str) -> dict:
         # Migration from old format (no tx key tracking)
         state.setdefault("processed_tx_keys", [])
         state.setdefault("pending_tx_keys", [])
+        # Migrate old calendar-based cache to chunk-based format
+        cc = state.get("compression_cache", {})
+        if "weekly" in cc or "monthly" in cc or not cc:
+            state["compression_cache"] = {"groups": {}, "super_groups": {}}
+        else:
+            cc.setdefault("groups", {})
+            cc.setdefault("super_groups", {})
         return state
     return {
         "chunk_index": 0,
         "chronology_parts": [],
         "processed_tx_keys": [],
         "pending_tx_keys": [],
+        "compression_cache": {"groups": {}, "super_groups": {}},
     }
 
 
@@ -428,6 +673,7 @@ def analyze_wallet(wallet: str) -> None:
     processed_keys = set(state["processed_tx_keys"])
     pending_keys = set(state.get("pending_tx_keys", []))
     start_chunk = state["chunk_index"]
+    compression_cache = state.get("compression_cache", {"weekly": {}, "monthly": {}})
 
     # Determine which transactions need processing
     resuming = bool(pending_keys and start_chunk > 0)
@@ -484,43 +730,13 @@ def analyze_wallet(wallet: str) -> None:
 
         tx_text = "\n".join(formatted_lines)
 
-        # Build context: compact "Суть дня" summaries + last N full chronologies
-        if chronology_parts:
-            context_sections = []
+        # Build context: compressed summaries + last N full chronologies
+        context = build_context_for_llm(chronology_parts, compression_cache)
 
-            # Split into old (summaries only) and recent (full text)
-            if len(chronology_parts) > FULL_CHRONOLOGY_COUNT:
-                old_parts = chronology_parts[:-FULL_CHRONOLOGY_COUNT]
-                recent_parts = chronology_parts[-FULL_CHRONOLOGY_COUNT:]
-            else:
-                old_parts = []
-                recent_parts = chronology_parts
-
-            # Extract day summaries from older chronologies
-            if old_parts:
-                all_summaries = []
-                for part in old_parts:
-                    all_summaries.extend(extract_day_summaries(part))
-
-                if MAX_CONTEXT_SUMMARIES is not None:
-                    all_summaries = all_summaries[-MAX_CONTEXT_SUMMARIES:]
-
-                if all_summaries:
-                    context_sections.append(
-                        "## Краткий контекст предыдущей активности:\n"
-                        + "\n".join(f"- {s}" for s in all_summaries)
-                    )
-
-            # Add full recent chronologies
-            if recent_parts:
-                context_sections.append(
-                    "## Подробная хронология последних дней:\n\n"
-                    + "\n\n".join(recent_parts)
-                )
-
-            context = "\n\n".join(context_sections)
-        else:
-            context = "## Контекст предыдущей активности:\nЭто начало анализа, предыдущих данных нет."
+        # Save context for inspection
+        context_path = REPORTS_DIR / f"{wallet.lower()}_context.md"
+        with open(context_path, "w", encoding="utf-8") as f:
+            f.write(f"# LLM Context for chunk {i + 1}/{total_chunks}\n\n{context}")
 
         user_prompt = f"""{context}
 
@@ -539,6 +755,7 @@ def analyze_wallet(wallet: str) -> None:
                 "chronology_parts": chronology_parts,
                 "processed_tx_keys": list(processed_keys),
                 "pending_tx_keys": batch_keys,
+                "compression_cache": compression_cache,
             })
             print(f"  State saved, you can continue later.")
             return
@@ -554,6 +771,7 @@ def analyze_wallet(wallet: str) -> None:
             "chronology_parts": chronology_parts,
             "processed_tx_keys": list(processed_keys),
             "pending_tx_keys": batch_keys,
+            "compression_cache": compression_cache,
         })
         print(f"  Done.")
 
@@ -564,6 +782,7 @@ def analyze_wallet(wallet: str) -> None:
         "chronology_parts": chronology_parts,
         "processed_tx_keys": list(processed_keys),
         "pending_tx_keys": [],
+        "compression_cache": compression_cache,
     })
 
     report_path = save_report(wallet, chronology_parts)

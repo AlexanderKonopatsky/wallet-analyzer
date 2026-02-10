@@ -2,3 +2,4 @@ requests
 python-dotenv
 fastapi
 uvicorn
+playwright==1.48.0
