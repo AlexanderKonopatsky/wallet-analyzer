@@ -40,6 +40,8 @@ GOOGLE_CLIENT_SECRET=your_google_client_secret
 JWT_SECRET=your_jwt_secret
 ```
 
+**Note:** `GOOGLE_CLIENT_ID` is automatically used as build argument for frontend (via `railway.json`). No need to add `VITE_GOOGLE_CLIENT_ID` separately.
+
 **Optional:**
 ```
 AUTO_CLASSIFY_ENABLED=false
@@ -117,6 +119,13 @@ Add Railway URL to Google OAuth:
 ### Database errors
 - Ensure volumes are mounted correctly
 - Check `data/` and `reports/` paths in logs
+
+### Google OAuth fails (400: invalid_request, missing client_id)
+- **Cause:** Frontend was built without `GOOGLE_CLIENT_ID`
+- **Solution 1 (automatic):** Railway should use `railway.json` to pass build arg
+- **Solution 2 (manual):** Trigger redeploy after setting variables
+- **Verify:** Check deployment logs for `ARG VITE_GOOGLE_CLIENT_ID`
+- Ensure `GOOGLE_CLIENT_ID` is set in Railway Variables before build
 
 ### Out of credits
 - Optimize resources: reduce CPU/RAM in Settings

@@ -12,7 +12,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Build frontend
+# Build frontend with Google Client ID
+ARG VITE_GOOGLE_CLIENT_ID
 COPY frontend/ frontend/
 RUN cd frontend && npm install && npm run build
 
