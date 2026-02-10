@@ -301,6 +301,7 @@ def run_analysis_pipeline(wallet: str) -> None:
 
         # Save context for inspection
         from analyze import REPORTS_DIR
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
         context_path = REPORTS_DIR / f"{wallet.lower()}_context.md"
         with open(context_path, "w", encoding="utf-8") as f:
             f.write(f"# LLM Context for chunk {i + 1}/{total_chunks}\n\n{context}")
@@ -789,7 +790,7 @@ def generate_profile(
         "report_hash": report_hash,
     }
 
-    REPORTS_DIR.mkdir(exist_ok=True)
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     with open(profile_path, "w", encoding="utf-8") as f:
         json.dump(profile_data, f, indent=2, ensure_ascii=False)
 

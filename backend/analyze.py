@@ -633,14 +633,14 @@ def load_state(wallet: str) -> dict:
 
 
 def save_state(wallet: str, state: dict) -> None:
-    REPORTS_DIR.mkdir(exist_ok=True)
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     state_path = REPORTS_DIR / f"{wallet.lower()}_state.json"
     with open(state_path, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, ensure_ascii=False)
 
 
 def save_report(wallet: str, chronology_parts: list) -> str:
-    REPORTS_DIR.mkdir(exist_ok=True)
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     report_path = REPORTS_DIR / f"{wallet.lower()}.md"
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(f"# Хронология кошелька {wallet}\n\n")
