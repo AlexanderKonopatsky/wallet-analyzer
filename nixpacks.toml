@@ -5,8 +5,7 @@ nodejs = "18"
 [phases.install]
 cmds = [
     "pip install -r requirements.txt",
-    "cd frontend && npm install && cd ..",
-    "playwright install chromium --with-deps"
+    "cd frontend && npm install && cd .."
 ]
 
 [phases.build]
