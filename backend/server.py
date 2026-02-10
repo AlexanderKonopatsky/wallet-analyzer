@@ -49,6 +49,7 @@ from analyze import (
     build_context_for_llm,
     SYSTEM_PROMPT,
     FULL_CHRONOLOGY_COUNT,
+    merge_chronology_parts,
 )
 from portfolio import analyze_portfolio, load_cached_portfolio, is_cache_valid
 from categories import (
@@ -315,6 +316,11 @@ def run_analysis_pipeline(wallet: str) -> None:
     chunks = make_chunks(day_groups)
     total_chunks = len(chunks)
 
+    print(f"🚀 Начинаю анализ кошелька {wallet[:10]}...")
+    print(f"📦 Найдено {len(new_txs)} новых транзакций, разбито на {total_chunks} chunks")
+    if resuming:
+        print(f"♻️ Продолжаю с chunk {start_chunk + 1}/{total_chunks}")
+
     for i in range(start_chunk, total_chunks):
         chunk = chunks[i]
 
@@ -342,11 +348,13 @@ def run_analysis_pipeline(wallet: str) -> None:
 
 Опиши хронологию действий пользователя по дням."""
 
+        print(f"📊 Анализ chunk {i + 1}/{total_chunks} для кошелька {wallet[:10]}... ({len(formatted_lines)} транзакций)")
         response = call_llm(SYSTEM_PROMPT, user_prompt)
         chronology = parse_llm_response(response)
+        print(f"✅ Chunk {i + 1}/{total_chunks} обработан")
 
         if chronology:
-            chronology_parts.append(chronology)
+            chronology_parts = merge_chronology_parts(chronology_parts, chronology)
 
         save_state(wallet, {
             "chunk_index": i + 1,
@@ -366,6 +374,7 @@ def run_analysis_pipeline(wallet: str) -> None:
     })
 
     save_report(wallet, chronology_parts)
+    print(f"🎉 Анализ кошелька {wallet[:10]}... завершен! Отчет сохранен.")
 
 
 def background_refresh(wallet: str, user_id: int) -> None:
@@ -803,9 +812,9 @@ def get_report(
     if not report_path.exists():
         raise HTTPException(status_code=404, detail="No report found for this wallet")
 
-    # Auto-add wallet to user's list if not already there
+    # Security: only allow viewing if user owns wallet
     if not check_wallet_ownership(db, current_user.id, wallet):
-        add_user_wallet(db, current_user.id, wallet)
+        raise HTTPException(status_code=403, detail="Wallet not found in your list")
 
     markdown = report_path.read_text(encoding="utf-8")
     meta = get_wallet_meta(wallet)
@@ -826,6 +835,10 @@ def get_profile(
 ):
     """Get cached profile for a wallet. Profiles are shared globally (cached data)."""
     wallet = wallet.lower()
+
+    # Security: only allow viewing if user owns wallet
+    if not check_wallet_ownership(db, current_user.id, wallet):
+        raise HTTPException(status_code=403, detail="Wallet not found in your list")
 
     profile_path = REPORTS_DIR / f"{wallet}_profile.json"
 
@@ -896,6 +909,10 @@ def get_portfolio(
 ):
     """Get portfolio analysis for a wallet. Data is shared globally (cached). Returns cached if valid."""
     wallet = wallet.lower()
+
+    # Security: only allow viewing if user owns wallet
+    if not check_wallet_ownership(db, current_user.id, wallet):
+        raise HTTPException(status_code=403, detail="Wallet not found in your list")
 
     filepath = DATA_DIR / f"{wallet}.json"
 
@@ -1316,6 +1333,10 @@ def get_tx_counts(
     """Get transaction counts per day. Data is shared globally (cached)."""
     wallet = wallet.lower()
 
+    # Security: only allow viewing if user owns wallet
+    if not check_wallet_ownership(db, current_user.id, wallet):
+        raise HTTPException(status_code=403, detail="Wallet not found in your list")
+
     raw_txs = load_transactions(wallet)
 
     # If no transaction data, return 404
@@ -1338,6 +1359,10 @@ def get_transactions(
 ):
     """Get wallet transactions, optionally filtered by date range. Data is shared globally (cached)."""
     wallet = wallet.lower()
+
+    # Security: only allow viewing if user owns wallet
+    if not check_wallet_ownership(db, current_user.id, wallet):
+        raise HTTPException(status_code=403, detail="Wallet not found in your list")
 
     raw_txs = load_transactions(wallet)
 
@@ -1432,10 +1457,16 @@ async def start_bulk_refresh(
     # Start refresh for each wallet (if not already running)
     started = []
     already_running = []
+    skipped_unauthorized = []  # Track wallets user doesn't actually own
     user_refresh_tasks = load_refresh_status(current_user.id)
 
     for wallet in wallets:
         wallet_lower = wallet.lower()
+
+        # Security check: verify user actually owns this wallet before refreshing
+        if not check_wallet_ownership(db, current_user.id, wallet_lower):
+            skipped_unauthorized.append(wallet_lower)
+            continue
 
         # Check if thread is already running
         existing_thread = active_threads.get(wallet_lower)
@@ -1462,6 +1493,7 @@ async def start_bulk_refresh(
         "status": "started",
         "started": started,
         "already_running": already_running,
+        "skipped_unauthorized": skipped_unauthorized,
         "total": len(wallets)
     }
 
@@ -1523,6 +1555,10 @@ def get_related_wallets(
 ):
     """Find wallets that have bidirectional transfers with this wallet. Data is shared globally (cached)."""
     wallet = wallet.lower()
+
+    # Security: only allow viewing if user owns wallet
+    if not check_wallet_ownership(db, current_user.id, wallet):
+        raise HTTPException(status_code=403, detail="Wallet not found in your list")
 
     raw_txs = load_transactions(wallet)
 
@@ -1625,6 +1661,10 @@ def get_related_transactions(
     """Get transfer transactions between wallet and a specific counterparty. Data is shared globally (cached)."""
     wallet = wallet.lower()
     counterparty = counterparty.lower()
+
+    # Security: only allow viewing if user owns wallet
+    if not check_wallet_ownership(db, current_user.id, wallet):
+        raise HTTPException(status_code=403, detail="Wallet not found in your list")
 
     raw_txs = load_transactions(wallet)
 

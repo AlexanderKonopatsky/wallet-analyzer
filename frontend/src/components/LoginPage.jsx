@@ -87,7 +87,7 @@ export default function LoginPage({ onLogin }) {
   return (
     <div className="login-page">
       <div className="login-card">
-        <h1>DeFi Wallet Analyzer</h1>
+        <h1><span className="login-accent">DeFi</span> Wallet Monitor</h1>
 
         <p className="login-description">
           Sign in with your Google account to access the application

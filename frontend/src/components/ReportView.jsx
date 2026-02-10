@@ -241,7 +241,7 @@ const DayCard = memo(function DayCard({ id, date, content, walletAddress, isNew,
   )
 })
 
-function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount }) {
+function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount, updatedSectionIndices = new Set() }) {
   const { summary, sections } = useMemo(
     () => parseReport(report?.markdown),
     [report?.markdown]
@@ -304,7 +304,10 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
             date={section.date}
             content={section.content}
             walletAddress={walletAddress}
-            isNew={oldSectionCount !== null && section._originalIndex >= oldSectionCount}
+            isNew={
+              (oldSectionCount !== null && section._originalIndex >= oldSectionCount) ||
+              updatedSectionIndices.has(section._originalIndex)
+            }
             significance={section._significance}
             defaultOpen={false}
           />

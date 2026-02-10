@@ -78,7 +78,11 @@ def _api_request(params: dict) -> requests.Response:
 
 def fetch_all_transactions(wallet: str, existing_txs: dict) -> list:
     """Fetches all wallet transactions with pagination (100 per request).
-    Saves data after each page for protection against interruption."""
+    Saves data after each page for protection against interruption.
+
+    Optimization: API returns transactions in reverse-chronological order (newest first).
+    If we encounter consecutive duplicates, it means we've reached already-fetched older data,
+    so we stop fetching instead of checking all remaining pages."""
     start_from = None
     page = 1
     new_count = 0
@@ -86,6 +90,8 @@ def fetch_all_transactions(wallet: str, existing_txs: dict) -> list:
     max_pending_retries = 6  # Increased: Cielo API may take longer to index
     empty_retries = 0
     max_empty_retries = 3  # Additional retries when status:ok but 0 items
+    consecutive_duplicates = 0
+    max_consecutive_duplicates = 10  # Stop if we see 10 items in a row that are duplicates
 
     while True:
         # Rate limiting: 10 credits/sec, 3 credits per request = max ~3 req/sec
@@ -93,7 +99,7 @@ def fetch_all_transactions(wallet: str, existing_txs: dict) -> list:
         if page > 1:
             time.sleep(0.4)  # ~2.5 requests/sec to be safe
 
-        print(f"Requesting page {page}...")
+        print(f"📥 Загрузка транзакций: страница {page}...")
         params = {"wallet": wallet, "limit": 100}
         if start_from:
             params["startFrom"] = start_from
@@ -139,17 +145,25 @@ def fetch_all_transactions(wallet: str, existing_txs: dict) -> list:
             if tx["tx_hash"] not in existing_txs:
                 existing_txs[tx["tx_hash"]] = tx
                 page_new_count += 1
+                consecutive_duplicates = 0  # Reset counter when we find a new transaction
+            else:
+                consecutive_duplicates += 1
 
         new_count += page_new_count
 
-        # Save after each page
+        # Save after each page with new data
         if page_new_count > 0:
             all_transactions = list(existing_txs.values())
             all_transactions.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
             save_data(wallet, all_transactions)
-            print(f"  → Saved {page_new_count} new transactions (total new: {new_count})")
+            print(f"  ✅ Сохранено {page_new_count} новых транзакций (всего новых: {new_count})")
         else:
             print(f"  → No new transactions on this page (all duplicates)")
+
+        # Optimization: if we see many duplicates in a row, we've reached already-fetched data
+        if consecutive_duplicates >= max_consecutive_duplicates:
+            print(f"  → {consecutive_duplicates} consecutive duplicates. Reached already-fetched data. Stopping.")
+            break
 
         # If no transactions on page - this is the end of data
         if not items:
@@ -177,13 +191,23 @@ def load_existing_data(wallet: str) -> dict:
 
 
 def save_data(wallet: str, transactions: list) -> None:
-    """Saves data to JSON file."""
+    """Saves data to JSON file. Only updates last_updated if transactions changed."""
     DATA_DIR.mkdir(exist_ok=True)
     filepath = DATA_DIR / f"{wallet.lower()}.json"
 
+    # Load existing data to check if transactions actually changed
+    existing_data = load_existing_data(wallet)
+    existing_tx_count = len(existing_data.get("transactions", []))
+    new_tx_count = len(transactions)
+
+    # Only update last_updated if transaction count changed
+    last_updated = existing_data.get("last_updated")
+    if new_tx_count != existing_tx_count:
+        last_updated = datetime.now(timezone.utc).isoformat()
+
     data = {
         "wallet": wallet,
-        "last_updated": datetime.now(timezone.utc).isoformat(),
+        "last_updated": last_updated,
         "transactions": transactions,
     }
 

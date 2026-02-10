@@ -307,6 +307,7 @@ function App() {
 
   // Track which sections are NEW (by original index in markdown)
   const [oldSectionCount, setOldSectionCount] = useState(null)
+  const [updatedSectionIndices, setUpdatedSectionIndices] = useState(new Set())
 
   // localStorage helpers for tracking viewed reports
   const getViewedTxCount = useCallback((walletAddr) => {
@@ -319,11 +320,38 @@ function App() {
     }
   }, [])
 
+  const getViewedState = useCallback((walletAddr) => {
+    try {
+      const key = `wallet_viewed_${walletAddr.toLowerCase()}`
+      const data = localStorage.getItem(key)
+      return data ? JSON.parse(data) : null
+    } catch {
+      return null
+    }
+  }, [])
+
   const checkHasNewData = useCallback((wallet) => {
+    if (!wallet.has_report) return false
+
+    const viewedState = getViewedState(wallet.address)
+
+    // Never viewed before
+    if (!viewedState) return true
+
+    // Check if tx_count increased
     const currentTxCount = wallet.tx_count || 0
-    const viewedTxCount = getViewedTxCount(wallet.address)
-    return currentTxCount > viewedTxCount && wallet.has_report
-  }, [getViewedTxCount])
+    const viewedTxCount = viewedState.tx_count || 0
+    if (currentTxCount > viewedTxCount) return true
+
+    // Check if report was updated after last view (for merged days)
+    if (wallet.last_updated && viewedState.last_viewed) {
+      const reportUpdated = new Date(wallet.last_updated)
+      const lastViewed = new Date(viewedState.last_viewed)
+      if (reportUpdated > lastViewed) return true
+    }
+
+    return false
+  }, [getViewedState])
 
   // Process report data: determine NEW sections, update localStorage, remove green dot
   const processReportData = useCallback((wallet, data) => {
@@ -333,18 +361,52 @@ function App() {
     const oldTxCount = oldState?.tx_count || 0
     const storedSectionCount = oldState?.section_count
 
-    // Show NEW badges only if: tx_count increased AND we have stored section_count
-    if (data.tx_count > oldTxCount && oldState !== null && storedSectionCount !== undefined) {
+    // Create fingerprints for sections (date + content length)
+    const createFingerprints = (markdown) => {
+      const sections = markdown.match(/### \d{4}-\d{2}-\d{2}[^\n]*/g) || []
+      return sections.map((section, idx) => {
+        const date = section.match(/### (\d{4}-\d{2}-\d{2}(?: — \d{4}-\d{2}-\d{2})?)/)?.[1] || ''
+        const nextSectionIdx = markdown.indexOf('### ', markdown.indexOf(section) + 1)
+        const content = nextSectionIdx > 0
+          ? markdown.slice(markdown.indexOf(section), nextSectionIdx)
+          : markdown.slice(markdown.indexOf(section))
+        return `${date}:${content.length}`
+      })
+    }
+
+    const currentFingerprints = createFingerprints(data.markdown)
+    const oldFingerprints = oldState?.section_fingerprints || []
+
+    // Check if report was updated (new txs OR merged days)
+    const hasNewTxs = data.tx_count > oldTxCount
+    const reportUpdated = data.last_updated && oldState?.last_viewed &&
+      new Date(data.last_updated) > new Date(oldState.last_viewed)
+
+    // Find updated sections (fingerprint changed)
+    const updatedIndices = new Set()
+    if (oldFingerprints.length > 0) {
+      currentFingerprints.forEach((fp, idx) => {
+        if (idx < oldFingerprints.length && fp !== oldFingerprints[idx]) {
+          updatedIndices.add(idx)
+        }
+      })
+    }
+
+    // Show NEW badges if: (new txs OR report updated) AND we have stored section_count
+    if ((hasNewTxs || reportUpdated) && oldState !== null && storedSectionCount !== undefined) {
       setOldSectionCount(storedSectionCount)
+      setUpdatedSectionIndices(updatedIndices)
     } else {
       setOldSectionCount(null)
+      setUpdatedSectionIndices(new Set())
     }
 
     // Update localStorage with current state
     localStorage.setItem(key, JSON.stringify({
       tx_count: data.tx_count,
       last_viewed: new Date().toISOString(),
-      section_count: countSections(data.markdown)
+      section_count: countSections(data.markdown),
+      section_fingerprints: currentFingerprints
     }))
 
     // Remove green dot
@@ -816,6 +878,7 @@ function App() {
               walletTag={currentTag}
               walletAddress={selectedWallet}
               oldSectionCount={oldSectionCount}
+              updatedSectionIndices={updatedSectionIndices}
             />
           )}
         </div>
