@@ -19,12 +19,13 @@ RUN cd frontend && npm install && npm run build
 # Copy backend
 COPY backend/ backend/
 
-# Copy other needed files
-COPY .env.example .
-
 # Create data directories
 RUN mkdir -p data/reports
 
+# Set working directory to backend
+WORKDIR /app/backend
+
 EXPOSE 8000
 
-CMD cd backend && uvicorn server:app --host 0.0.0.0 --port ${PORT:-8000}
+# Use shell form to properly handle PORT variable
+CMD uvicorn server:app --host 0.0.0.0 --port ${PORT:-8000}
