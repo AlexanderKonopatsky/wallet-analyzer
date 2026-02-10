@@ -432,6 +432,13 @@ class GoogleAuthRequest(BaseModel):
 # ── Auth Endpoints ────────────────────────────────────────────────────────────
 
 
+@app.get("/api/auth/config")
+async def auth_config():
+    """Return public auth config (Google Client ID) for frontend."""
+    from auth import GOOGLE_CLIENT_ID
+    return {"google_client_id": GOOGLE_CLIENT_ID or ""}
+
+
 @app.post("/api/auth/request-code")
 async def request_code(body: RequestCodeRequest, db: Database = Depends(get_db)):
     """Send verification code to email."""

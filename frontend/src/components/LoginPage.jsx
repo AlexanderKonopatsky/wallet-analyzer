@@ -7,43 +7,51 @@ export default function LoginPage({ onLogin }) {
   const googleButtonRef = useRef(null)
 
   useEffect(() => {
-    // Load Google Identity Services SDK
-    const script = document.createElement('script')
-    script.src = 'https://accounts.google.com/gsi/client'
-    script.async = true
-    script.defer = true
-
-    script.onload = () => {
-      // Initialize Google Sign-In
-      if (window.google) {
-        window.google.accounts.id.initialize({
-          client_id: import.meta.env.VITE_GOOGLE_CLIENT_ID,
-          callback: handleGoogleResponse
-        })
-
-        // Render button
-        if (googleButtonRef.current) {
-          window.google.accounts.id.renderButton(
-            googleButtonRef.current,
-            {
-              theme: 'filled_blue',
-              size: 'large',
-              text: 'signin_with',
-              width: 300
-            }
-          )
+    // Fetch Google Client ID from backend, then load Google SDK
+    fetch('/api/auth/config')
+      .then(res => res.json())
+      .then(config => {
+        if (!config.google_client_id) {
+          setError('Google OAuth not configured')
+          return
         }
-      }
-    }
 
-    document.head.appendChild(script)
+        // Load Google Identity Services SDK
+        const script = document.createElement('script')
+        script.src = 'https://accounts.google.com/gsi/client'
+        script.async = true
+        script.defer = true
 
-    return () => {
-      // Cleanup: remove script on unmount
-      if (script.parentNode) {
-        script.parentNode.removeChild(script)
-      }
-    }
+        script.onload = () => {
+          if (window.google) {
+            window.google.accounts.id.initialize({
+              client_id: config.google_client_id,
+              callback: handleGoogleResponse
+            })
+
+            if (googleButtonRef.current) {
+              window.google.accounts.id.renderButton(
+                googleButtonRef.current,
+                {
+                  theme: 'filled_blue',
+                  size: 'large',
+                  text: 'signin_with',
+                  width: 300
+                }
+              )
+            }
+          }
+        }
+
+        document.head.appendChild(script)
+
+        return () => {
+          if (script.parentNode) {
+            script.parentNode.removeChild(script)
+          }
+        }
+      })
+      .catch(() => setError('Failed to load auth config'))
   }, [])
 
   const handleGoogleResponse = async (response) => {
