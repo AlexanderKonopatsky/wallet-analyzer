@@ -1563,25 +1563,13 @@ def get_related_transactions(
 
 
 # Serve frontend static files (for production)
+# IMPORTANT: This must be defined AFTER all API routes!
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
 if FRONTEND_DIST.exists():
-    # Serve static assets (JS, CSS, images)
-    app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="assets")
-
-    # Catch-all route for SPA (must be last)
-    @app.get("/{full_path:path}")
-    async def serve_frontend(full_path: str):
-        # If path is API route, let it pass through to API handlers
-        if full_path.startswith("api/"):
-            raise HTTPException(status_code=404, detail="API endpoint not found")
-
-        # Check if file exists
-        file_path = FRONTEND_DIST / full_path
-        if file_path.is_file():
-            return FileResponse(file_path)
-
-        # Otherwise serve index.html (SPA routing)
-        return FileResponse(FRONTEND_DIST / "index.html")
+    # Mount static files with html=True for SPA routing
+    # This automatically serves index.html for non-existent paths (SPA routing)
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="static")
+    print("✅ Frontend static files mounted from:", FRONTEND_DIST)
 else:
     print("⚠️  Frontend dist folder not found. Running in API-only mode.")
 
