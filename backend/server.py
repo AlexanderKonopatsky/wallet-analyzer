@@ -126,6 +126,7 @@ print(f"[Init] Reports directory: {REPORTS_DIR} (exists: {REPORTS_DIR.exists()})
 TAGS_FILE = DATA_DIR / "wallet_tags.json"
 REFRESH_STATUS_FILE = DATA_DIR / "refresh_status.json"
 EXCLUDED_WALLETS_FILE = DATA_DIR / "excluded_wallets.json"
+HIDDEN_WALLETS_FILE = DATA_DIR / "hidden_wallets.json"
 
 # Profile generation settings
 PROFILE_MODEL = "google/gemini-3-flash-preview"
@@ -212,6 +213,28 @@ def save_excluded_wallets(excluded: dict) -> None:
     DATA_DIR.mkdir(exist_ok=True)
     with open(EXCLUDED_WALLETS_FILE, "w", encoding="utf-8") as f:
         json.dump(excluded, f, indent=2, ensure_ascii=False)
+
+
+def load_hidden_wallets(user_id: int) -> set:
+    """Load hidden wallet addresses for specific user."""
+    user_dir = get_user_data_dir(user_id)
+    hidden_file = user_dir / "hidden_wallets.json"
+    if hidden_file.exists():
+        try:
+            with open(hidden_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return set(data.get("hidden", []))
+        except Exception:
+            return set()
+    return set()
+
+
+def save_hidden_wallets(user_id: int, hidden: set) -> None:
+    """Save hidden wallet addresses for specific user."""
+    user_dir = get_user_data_dir(user_id)
+    hidden_file = user_dir / "hidden_wallets.json"
+    with open(hidden_file, "w", encoding="utf-8") as f:
+        json.dump({"hidden": list(hidden)}, f, indent=2, ensure_ascii=False)
 
 
 def check_wallet_ownership(db: Database, user_id: int, wallet_address: str) -> bool:
@@ -538,14 +561,19 @@ def list_wallets(
     current_user: User = Depends(get_current_user),
     db: Database = Depends(get_db)
 ):
-    """List user's tracked wallets."""
+    """List user's tracked wallets (excluding hidden ones)."""
     tags = load_wallet_tags(current_user.id)
+    hidden = load_hidden_wallets(current_user.id)
 
     # Get user's wallets from DB
     wallet_addresses = current_user.wallet_addresses
 
     wallets = []
     for address in wallet_addresses:
+        # Skip hidden wallets
+        if address.lower() in hidden:
+            continue
+
         meta = get_wallet_meta(address)
         if meta:
             report_path = REPORTS_DIR / f"{address}.md"
@@ -713,6 +741,50 @@ def get_wallet_category_info(
         return {"wallet": wallet_lower, "category": category}
 
     return {"wallet": wallet_lower, "category": None}
+
+
+# ── Wallet Hiding/Unhiding ────────────────────────────────────────────────────
+
+
+@app.post("/api/wallets/{wallet}/hide")
+def hide_wallet(
+    wallet: str,
+    current_user: User = Depends(get_current_user),
+    db: Database = Depends(get_db)
+):
+    """Hide wallet from list (user must own it). Wallet data remains in database."""
+    wallet_lower = wallet.lower()
+
+    # Check ownership
+    if not check_wallet_ownership(db, current_user.id, wallet_lower):
+        raise HTTPException(status_code=403, detail="Wallet not found in your list")
+
+    hidden = load_hidden_wallets(current_user.id)
+    hidden.add(wallet_lower)
+    save_hidden_wallets(current_user.id, hidden)
+
+    return {"wallet": wallet_lower, "status": "hidden"}
+
+
+@app.post("/api/wallets/{wallet}/unhide")
+def unhide_wallet(
+    wallet: str,
+    current_user: User = Depends(get_current_user),
+    db: Database = Depends(get_db)
+):
+    """Restore hidden wallet to list (user must own it)."""
+    wallet_lower = wallet.lower()
+
+    # Check ownership
+    if not check_wallet_ownership(db, current_user.id, wallet_lower):
+        raise HTTPException(status_code=403, detail="Wallet not found in your list")
+
+    hidden = load_hidden_wallets(current_user.id)
+    if wallet_lower in hidden:
+        hidden.remove(wallet_lower)
+        save_hidden_wallets(current_user.id, hidden)
+
+    return {"wallet": wallet_lower, "status": "visible"}
 
 
 @app.get("/api/report/{wallet}")

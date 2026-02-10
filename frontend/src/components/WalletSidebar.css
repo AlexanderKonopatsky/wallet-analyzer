@@ -92,6 +92,7 @@
   border-left: 3px solid transparent;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
+  position: relative;
 }
 
 .wallet-card:hover {
@@ -352,11 +353,36 @@
   padding-top: 4px;
 }
 
-/* Wallet category indicator */
-.wallet-card {
-  position: relative;
+/* Wallet card remove button */
+.wallet-card-remove {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: #484f58;
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
+.wallet-card:hover .wallet-card-remove {
+  opacity: 1;
+}
+
+.wallet-card-remove:hover {
+  color: #f85149;
+}
+
+/* Wallet category indicator */
 .wallet-card-category-indicator {
   position: absolute;
   left: 0;

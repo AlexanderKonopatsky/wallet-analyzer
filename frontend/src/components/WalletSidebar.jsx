@@ -224,6 +224,22 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
     return () => document.removeEventListener('click', closeContextMenu)
   }, [])
 
+  const handleHideWallet = async (walletAddr, e) => {
+    e.stopPropagation()
+
+    try {
+      const res = await apiCall(`/api/wallets/${walletAddr}/hide`, {
+        method: 'POST'
+      })
+
+      if (res.ok) {
+        onRefresh?.()
+      }
+    } catch (err) {
+      console.error('Failed to hide wallet:', err)
+    }
+  }
+
   const renderWalletCard = (w) => {
     const addr = w.address.toLowerCase()
     const isActive = addr === selectedWallet
@@ -244,6 +260,13 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
             style={{ backgroundColor: w.category.color }}
           />
         )}
+        <button
+          className="wallet-card-remove"
+          onClick={(e) => handleHideWallet(addr, e)}
+          title="Hide wallet"
+        >
+          ×
+        </button>
         <div className="wallet-card-top">
           {editingAddr === addr ? (
             <div className="wallet-card-tag-edit" onClick={e => e.stopPropagation()}>
