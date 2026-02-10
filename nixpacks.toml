@@ -1,0 +1,16 @@
+[phases.setup]
+nixPkgs = ["python310", "nodejs-18_x", "playwright-driver"]
+
+[phases.install]
+cmds = [
+    "pip install -r requirements.txt",
+    "playwright install chromium --with-deps"
+]
+
+[phases.build]
+cmds = [
+    "cd frontend && npm install && npm run build && cd .."
+]
+
+[start]
+cmd = "cd backend && uvicorn server:app --host 0.0.0.0 --port $PORT"
