@@ -371,6 +371,16 @@ def background_refresh(wallet: str, user_id: int) -> None:
             raise Exception("No transaction data available yet. Data is still loading from API. Please try again in a few minutes.")
 
         # Step 2: Analyze
+        # Check if wallet has any transactions
+        reloaded_data = load_existing_data(wallet)
+        if not reloaded_data["transactions"]:
+            print(f"[Refresh] Wallet {wallet_lower} has 0 transactions. Skipping analysis.", flush=True)
+            user_refresh_tasks = load_refresh_status(user_id)
+            user_refresh_tasks[wallet_lower] = {"status": "done", "detail": "Wallet has no transactions"}
+            save_refresh_status(user_id, user_refresh_tasks)
+            refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
+            return
+
         print(f"[Refresh] Step 2: Analyzing transactions for {wallet_lower}", flush=True)
         user_refresh_tasks = load_refresh_status(user_id)
         user_refresh_tasks[wallet_lower] = {"status": "analyzing", "detail": "Analyzing transactions with AI..."}

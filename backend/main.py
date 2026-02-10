@@ -83,7 +83,9 @@ def fetch_all_transactions(wallet: str, existing_txs: dict) -> list:
     page = 1
     new_count = 0
     pending_retries = 0
-    max_pending_retries = 3
+    max_pending_retries = 6  # Increased: Cielo API may take longer to index
+    empty_retries = 0
+    max_empty_retries = 3  # Additional retries when status:ok but 0 items
 
     while True:
         # Rate limiting: 10 credits/sec, 3 credits per request = max ~3 req/sec
@@ -105,7 +107,7 @@ def fetch_all_transactions(wallet: str, existing_txs: dict) -> list:
             if page == 1 and pending_retries < max_pending_retries:
                 # First request for this wallet - wait and retry
                 pending_retries += 1
-                wait_time = 5 * pending_retries  # Progressive backoff: 5s, 10s, 15s
+                wait_time = 5 * pending_retries  # Progressive backoff: 5s, 10s, 15s, 20s, 25s, 30s
                 print(f"Data is loading (first request for this wallet). Waiting {wait_time} seconds... (attempt {pending_retries}/{max_pending_retries})")
                 time.sleep(wait_time)
                 continue
@@ -121,6 +123,15 @@ def fetch_all_transactions(wallet: str, existing_txs: dict) -> list:
         items = result.get("data", {}).get("items", [])
         print(f"  → Received {len(items)} items from API")
         print(f"  → Current existing_txs count: {len(existing_txs)}")
+
+        # Cielo API may return status:ok with 0 items while still indexing
+        # Retry a few times before giving up
+        if page == 1 and not items and not existing_txs and empty_retries < max_empty_retries:
+            empty_retries += 1
+            wait_time = 10 * empty_retries  # 10s, 20s, 30s
+            print(f"  → Status OK but 0 items. Waiting {wait_time} seconds... (empty retry {empty_retries}/{max_empty_retries})")
+            time.sleep(wait_time)
+            continue
 
         # Add new transactions
         page_new_count = 0
