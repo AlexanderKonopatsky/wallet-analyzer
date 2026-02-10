@@ -49,14 +49,14 @@ CONTEXT_COMPRESSION_ENABLED=true
 
 ### 4. Add Persistent Volume
 
-1. Go to your service → Settings → Volumes
-2. Click "New Volume"
-3. Mount path: `/app/data`
-4. Size: 1 GB (or more if needed)
-5. Click "Add Volume"
-6. Repeat for reports:
-   - Mount path: `/app/reports`
-   - Size: 1 GB
+1. Right-click on service `wallet-analyzer` → "Attach volume"
+2. Click on the created volume → Settings
+3. Configure:
+   - Mount path: `/app/data`
+   - Size: 1 GB (or more if needed)
+4. Save
+
+**Note:** Reports are stored inside `/app/data/reports/` (same volume)
 
 ### 5. Deploy
 
