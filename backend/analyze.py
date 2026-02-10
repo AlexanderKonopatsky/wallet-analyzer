@@ -26,7 +26,7 @@ CONTEXT_WEEKLY_COUNT = int(os.getenv("CONTEXT_WEEKLY_COUNT", 30))
 TIER2_GROUP_SIZE = int(os.getenv("CONTEXT_TIER2_GROUP_SIZE", 5))
 TIER3_SUPER_SIZE = int(os.getenv("CONTEXT_TIER3_SUPER_SIZE", 3))
 DATA_DIR = Path(__file__).parent.parent / "data"
-REPORTS_DIR = Path(__file__).parent.parent / "reports"
+REPORTS_DIR = Path(__file__).parent.parent / "data" / "reports"
 
 SYSTEM_PROMPT = """\
 Ты — аналитик DeFi-транзакций. Твоя задача — описать на русском языке, \
