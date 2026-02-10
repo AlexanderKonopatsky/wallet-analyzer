@@ -6,6 +6,9 @@
 }
 
 .app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   padding: 16px 24px;
   border-bottom: 1px solid #30363d;
 }
@@ -20,6 +23,41 @@
 
 .app-header h1 span {
   color: #58a6ff;
+}
+
+.user-menu {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.user-email {
+  font-size: 0.85rem;
+  color: #8b949e;
+}
+
+.btn-logout {
+  padding: 6px 12px;
+  background: #21262d;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: background 0.15s;
+}
+
+.btn-logout:hover {
+  background: #30363d;
+}
+
+.app-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  font-size: 1.1rem;
+  color: #8b949e;
 }
 
 /* Two-column layout */

@@ -13,10 +13,21 @@ from pathlib import Path
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True)
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from main import fetch_all_transactions, load_existing_data, save_data
+from db import init_db, get_db, User, UserWallet
+from auth import (
+    create_verification_code,
+    verify_code,
+    create_jwt_token,
+    get_current_user,
+    verify_google_token,
+    get_or_create_user_from_google
+)
 from analyze import (
     load_transactions,
     filter_transactions,
@@ -83,6 +94,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.on_event("startup")
+def startup_event():
+    """Initialize database on startup."""
+    init_db()
+
 # Path relative to project root
 PROJECT_ROOT = Path(__file__).parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
@@ -113,41 +130,54 @@ refresh_tasks: dict[str, dict] = {}
 active_threads: dict[str, threading.Thread] = {}
 
 
-def load_wallet_tags() -> dict:
-    """Load wallet tags/names from file."""
-    if TAGS_FILE.exists():
-        with open(TAGS_FILE, "r", encoding="utf-8") as f:
+def get_user_data_dir(user_id: int) -> Path:
+    """Get user-specific data directory."""
+    user_dir = DATA_DIR / "users" / str(user_id)
+    user_dir.mkdir(parents=True, exist_ok=True)
+    return user_dir
+
+
+def load_wallet_tags(user_id: int) -> dict:
+    """Load wallet tags/names from user's file."""
+    user_dir = get_user_data_dir(user_id)
+    tags_file = user_dir / "wallet_tags.json"
+    if tags_file.exists():
+        with open(tags_file, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
 
 
-def save_wallet_tags(tags: dict) -> None:
-    """Save wallet tags/names to file."""
-    DATA_DIR.mkdir(exist_ok=True)
-    with open(TAGS_FILE, "w", encoding="utf-8") as f:
+def save_wallet_tags(user_id: int, tags: dict) -> None:
+    """Save wallet tags/names to user's file."""
+    user_dir = get_user_data_dir(user_id)
+    tags_file = user_dir / "wallet_tags.json"
+    with open(tags_file, "w", encoding="utf-8") as f:
         json.dump(tags, f, indent=2, ensure_ascii=False)
 
 
-def load_refresh_status() -> dict:
-    """Load refresh task statuses from file."""
-    if REFRESH_STATUS_FILE.exists():
+def load_refresh_status(user_id: int) -> dict:
+    """Load refresh task statuses from user's file."""
+    user_dir = get_user_data_dir(user_id)
+    status_file = user_dir / "refresh_status.json"
+    if status_file.exists():
         try:
-            with open(REFRESH_STATUS_FILE, "r", encoding="utf-8") as f:
+            with open(status_file, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             return {}
     return {}
 
 
-def save_refresh_status(status_dict: dict) -> None:
-    """Save refresh task statuses to file."""
-    DATA_DIR.mkdir(exist_ok=True)
-    with open(REFRESH_STATUS_FILE, "w", encoding="utf-8") as f:
+def save_refresh_status(user_id: int, status_dict: dict) -> None:
+    """Save refresh task statuses to user's file."""
+    user_dir = get_user_data_dir(user_id)
+    status_file = user_dir / "refresh_status.json"
+    with open(status_file, "w", encoding="utf-8") as f:
         json.dump(status_dict, f, indent=2, ensure_ascii=False)
 
 
 def load_excluded_wallets() -> dict:
-    """Load excluded wallet addresses from file."""
+    """Load excluded wallet addresses from global file (shared DeBank cache)."""
     if EXCLUDED_WALLETS_FILE.exists():
         try:
             with open(EXCLUDED_WALLETS_FILE, "r", encoding="utf-8") as f:
@@ -158,10 +188,33 @@ def load_excluded_wallets() -> dict:
 
 
 def save_excluded_wallets(excluded: dict) -> None:
-    """Save excluded wallet addresses to file."""
+    """Save excluded wallet addresses to global file (shared DeBank cache)."""
     DATA_DIR.mkdir(exist_ok=True)
     with open(EXCLUDED_WALLETS_FILE, "w", encoding="utf-8") as f:
         json.dump(excluded, f, indent=2, ensure_ascii=False)
+
+
+def check_wallet_ownership(db: Session, user_id: int, wallet_address: str) -> bool:
+    """Check if user owns this wallet."""
+    return db.query(UserWallet).filter(
+        UserWallet.user_id == user_id,
+        UserWallet.wallet_address == wallet_address.lower()
+    ).first() is not None
+
+
+def add_user_wallet(db: Session, user_id: int, wallet_address: str):
+    """Add wallet to user's tracked wallets."""
+    wallet_address = wallet_address.lower()
+    existing = db.query(UserWallet).filter(
+        UserWallet.user_id == user_id,
+        UserWallet.wallet_address == wallet_address
+    ).first()
+
+    if not existing:
+        user_wallet = UserWallet(user_id=user_id, wallet_address=wallet_address)
+        db.add(user_wallet)
+        db.commit()
+        print(f"[DB] Added wallet {wallet_address} for user {user_id}")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -273,14 +326,16 @@ def run_analysis_pipeline(wallet: str) -> None:
     save_report(wallet, chronology_parts)
 
 
-def background_refresh(wallet: str) -> None:
-    """Background task: fetch transactions then run analysis."""
+def background_refresh(wallet: str, user_id: int) -> None:
+    """Background task: fetch transactions then run analysis for specific user."""
     wallet_lower = wallet.lower()
     try:
         # Step 1: Fetch transactions
-        print(f"[Refresh] Step 1: Fetching transactions for {wallet_lower}", flush=True)
-        refresh_tasks[wallet_lower] = {"status": "fetching", "detail": "Fetching transactions from API..."}
-        save_refresh_status(refresh_tasks)
+        print(f"[Refresh] Step 1: Fetching transactions for {wallet_lower} (user {user_id})", flush=True)
+        user_refresh_tasks = load_refresh_status(user_id)
+        user_refresh_tasks[wallet_lower] = {"status": "fetching", "detail": "Fetching transactions from API..."}
+        save_refresh_status(user_id, user_refresh_tasks)
+        refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
 
         existing_data = load_existing_data(wallet)
         existing_txs = {tx["tx_hash"]: tx for tx in existing_data["transactions"]}
@@ -298,13 +353,18 @@ def background_refresh(wallet: str) -> None:
 
         # Step 2: Analyze
         print(f"[Refresh] Step 2: Analyzing transactions for {wallet_lower}", flush=True)
-        refresh_tasks[wallet_lower] = {"status": "analyzing", "detail": "Analyzing transactions with AI..."}
-        save_refresh_status(refresh_tasks)
+        user_refresh_tasks = load_refresh_status(user_id)
+        user_refresh_tasks[wallet_lower] = {"status": "analyzing", "detail": "Analyzing transactions with AI..."}
+        save_refresh_status(user_id, user_refresh_tasks)
+        refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
+
         run_analysis_pipeline(wallet)
 
         print(f"[Refresh] Step 2 done: Analysis complete for {wallet_lower}", flush=True)
-        refresh_tasks[wallet_lower] = {"status": "done", "detail": "Refresh complete!"}
-        save_refresh_status(refresh_tasks)
+        user_refresh_tasks = load_refresh_status(user_id)
+        user_refresh_tasks[wallet_lower] = {"status": "done", "detail": "Refresh complete!"}
+        save_refresh_status(user_id, user_refresh_tasks)
+        refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
 
         # Step 3: Auto-classify related wallets in background
         print(f"[Refresh] Step 3: Starting auto-classification for {wallet_lower}", flush=True)
@@ -319,27 +379,107 @@ def background_refresh(wallet: str) -> None:
 
     except Exception as e:
         print(f"[Refresh] ERROR for {wallet_lower}: {e}", flush=True)
-        refresh_tasks[wallet_lower] = {"status": "error", "detail": str(e)}
-        save_refresh_status(refresh_tasks)
+        user_refresh_tasks = load_refresh_status(user_id)
+        user_refresh_tasks[wallet_lower] = {"status": "error", "detail": str(e)}
+        save_refresh_status(user_id, user_refresh_tasks)
+        refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
     finally:
         # Clean up thread reference (but not classify thread - it runs independently)
         active_threads.pop(wallet_lower, None)
 
 
-# ── Startup: Load persisted refresh statuses ─────────────────────────────────
+# ── Startup: Initialize refresh tasks tracking ──────────────────────────────
 
-# Load refresh statuses from disk on startup
-refresh_tasks = load_refresh_status()
+# Note: refresh_tasks will now be loaded per-user when needed
+# Global dict still used for in-memory tracking of active background tasks
+refresh_tasks: dict[str, dict] = {}
 
-# Clean up any stale "fetching" or "analyzing" statuses
-# (these would be from interrupted previous runs)
-for wallet, status in list(refresh_tasks.items()):
-    if status.get("status") in ("fetching", "analyzing"):
-        refresh_tasks[wallet] = {
-            "status": "error",
-            "detail": "Task interrupted (server restarted)"
+
+# ── Request/Response Models ──────────────────────────────────────────────────
+
+
+class RequestCodeRequest(BaseModel):
+    """Request body for /api/auth/request-code"""
+    email: str
+
+
+class VerifyCodeRequest(BaseModel):
+    """Request body for /api/auth/verify-code"""
+    email: str
+    code: str
+
+
+class GoogleAuthRequest(BaseModel):
+    """Request body for /api/auth/google"""
+    token: str
+
+
+# ── Auth Endpoints ────────────────────────────────────────────────────────────
+
+
+@app.post("/api/auth/request-code")
+async def request_code(body: RequestCodeRequest, db: Session = Depends(get_db)):
+    """Send verification code to email."""
+    try:
+        email = body.email.lower().strip()
+        create_verification_code(db, email)
+        return {"status": "sent", "email": email}
+    except Exception as e:
+        print(f"[Auth] Error sending code: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/auth/verify-code")
+async def verify_code_endpoint(body: VerifyCodeRequest, db: Session = Depends(get_db)):
+    """Verify code and return JWT token."""
+    email = body.email.lower().strip()
+    user = verify_code(db, email, body.code)
+
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired code")
+
+    token = create_jwt_token(user.id)
+
+    return {
+        "token": token,
+        "user": {
+            "id": user.id,
+            "email": user.email
         }
-save_refresh_status(refresh_tasks)
+    }
+
+
+@app.post("/api/auth/google")
+async def google_auth(body: GoogleAuthRequest, db: Session = Depends(get_db)):
+    """Authenticate with Google OAuth token."""
+    # Verify Google token
+    google_info = verify_google_token(body.token)
+
+    if not google_info:
+        raise HTTPException(status_code=401, detail="Invalid Google token")
+
+    # Get or create user
+    user = get_or_create_user_from_google(db, google_info)
+
+    # Create JWT token
+    token = create_jwt_token(user.id)
+
+    return {
+        "token": token,
+        "user": {
+            "id": user.id,
+            "email": user.email
+        }
+    }
+
+
+@app.get("/api/auth/me")
+async def get_me(current_user: User = Depends(get_current_user)):
+    """Get current user info."""
+    return {
+        "id": current_user.id,
+        "email": current_user.email
+    }
 
 
 # ── API Endpoints ─────────────────────────────────────────────────────────────
@@ -354,51 +494,70 @@ def get_settings():
 
 
 @app.get("/api/wallets")
-def list_wallets():
-    """List all tracked wallets."""
-    tags = load_wallet_tags()
+def list_wallets(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List user's tracked wallets."""
+    tags = load_wallet_tags(current_user.id)
+
+    # Get user's wallets from DB
+    user_wallets = db.query(UserWallet).filter(
+        UserWallet.user_id == current_user.id
+    ).all()
+
     wallets = []
-    if DATA_DIR.exists():
-        for filepath in sorted(DATA_DIR.glob("*.json")):
-            if filepath.name in ("wallet_tags.json", "categories.json", "refresh_status.json", "excluded_wallets.json"):
-                continue
-            address = filepath.stem
-            meta = get_wallet_meta(address)
-            if meta:
-                report_path = REPORTS_DIR / f"{address}.md"
-                meta["has_report"] = report_path.exists()
-                meta["tag"] = tags.get(address.lower(), "")
+    for uw in user_wallets:
+        address = uw.wallet_address
+        meta = get_wallet_meta(address)
+        if meta:
+            report_path = REPORTS_DIR / f"{address}.md"
+            meta["has_report"] = report_path.exists()
+            meta["tag"] = tags.get(address, "")
 
-                # Add category info
-                category_id = get_wallet_category(address.lower())
-                if category_id:
-                    category = get_category_by_id(category_id)
-                    meta["category"] = category
-                else:
-                    meta["category"] = None
+            # Add category info
+            category_id = get_wallet_category(current_user.id, address)
+            if category_id:
+                category = get_category_by_id(current_user.id, category_id)
+                meta["category"] = category
+            else:
+                meta["category"] = None
 
-                wallets.append(meta)
+            wallets.append(meta)
+
     return wallets
 
 
 @app.get("/api/tags")
-def get_tags():
-    """Get all wallet tags."""
-    return load_wallet_tags()
+def get_tags(current_user: User = Depends(get_current_user)):
+    """Get all wallet tags for current user."""
+    return load_wallet_tags(current_user.id)
 
 
 @app.put("/api/tags/{wallet}")
-async def set_tag(wallet: str, request: Request):
-    """Set tag/name for a wallet."""
+async def set_tag(
+    wallet: str,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Set tag/name for a wallet (user must own it)."""
     wallet_lower = wallet.lower()
+
+    # Check ownership
+    if not check_wallet_ownership(db, current_user.id, wallet_lower):
+        raise HTTPException(status_code=403, detail="Wallet not found in your list")
+
     body = await request.json()
     tag = body.get("tag", "").strip()
-    tags = load_wallet_tags()
+
+    tags = load_wallet_tags(current_user.id)
     if tag:
         tags[wallet_lower] = tag
     else:
         tags.pop(wallet_lower, None)
-    save_wallet_tags(tags)
+    save_wallet_tags(current_user.id, tags)
+
     return {"address": wallet_lower, "tag": tag}
 
 
@@ -406,10 +565,10 @@ async def set_tag(wallet: str, request: Request):
 
 
 @app.get("/api/categories")
-def list_categories():
-    """Get all categories with wallet counts."""
-    categories = get_all_categories()
-    stats = get_category_stats()
+def list_categories(current_user: User = Depends(get_current_user)):
+    """Get all categories with wallet counts for current user."""
+    categories = get_all_categories(current_user.id)
+    stats = get_category_stats(current_user.id)
 
     # Add wallet count to each category
     for category in categories:
@@ -422,8 +581,11 @@ def list_categories():
 
 
 @app.post("/api/categories")
-async def create_new_category(request: Request):
-    """Create a new category."""
+async def create_new_category(
+    request: Request,
+    current_user: User = Depends(get_current_user)
+):
+    """Create a new category for current user."""
     body = await request.json()
     name = body.get("name", "").strip()
     color = body.get("color", "#3b82f6")
@@ -431,19 +593,23 @@ async def create_new_category(request: Request):
     if not name:
         raise HTTPException(status_code=400, detail="Category name is required")
 
-    category = create_category(name, color)
+    category = create_category(current_user.id, name, color)
     return category
 
 
 @app.put("/api/categories/{category_id}")
-async def update_existing_category(category_id: str, request: Request):
-    """Update category (name, color, or expanded state)."""
+async def update_existing_category(
+    category_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_user)
+):
+    """Update category (name, color, or expanded state) for current user."""
     body = await request.json()
     name = body.get("name")
     color = body.get("color")
     expanded = body.get("expanded")
 
-    category = update_category(category_id, name=name, color=color, expanded=expanded)
+    category = update_category(current_user.id, category_id, name=name, color=color, expanded=expanded)
 
     if not category:
         raise HTTPException(status_code=404, detail="Category not found")
@@ -452,9 +618,12 @@ async def update_existing_category(category_id: str, request: Request):
 
 
 @app.delete("/api/categories/{category_id}")
-def remove_category(category_id: str):
-    """Delete a category. Wallets in this category will become uncategorized."""
-    success = delete_category(category_id)
+def remove_category(
+    category_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Delete a category for current user. Wallets in this category will become uncategorized."""
+    success = delete_category(current_user.id, category_id)
 
     if not success:
         raise HTTPException(status_code=404, detail="Category not found")
@@ -463,13 +632,23 @@ def remove_category(category_id: str):
 
 
 @app.put("/api/wallets/{wallet}/category")
-async def assign_wallet_category(wallet: str, request: Request):
+async def assign_wallet_category(
+    wallet: str,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Assign wallet to a category or remove from category (set to null)."""
     wallet_lower = wallet.lower()
+
+    # Check ownership
+    if not check_wallet_ownership(db, current_user.id, wallet_lower):
+        raise HTTPException(status_code=403, detail="Wallet not found in your list")
+
     body = await request.json()
     category_id = body.get("category_id")  # Can be null to uncategorize
 
-    success = set_wallet_category(wallet_lower, category_id)
+    success = set_wallet_category(current_user.id, wallet_lower, category_id)
 
     if not success:
         raise HTTPException(status_code=404, detail="Category not found")
@@ -478,26 +657,46 @@ async def assign_wallet_category(wallet: str, request: Request):
 
 
 @app.get("/api/wallets/{wallet}/category")
-def get_wallet_category_info(wallet: str):
-    """Get category info for a specific wallet."""
+def get_wallet_category_info(
+    wallet: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get category info for a specific wallet (user must own it)."""
     wallet_lower = wallet.lower()
-    category_id = get_wallet_category(wallet_lower)
+
+    # Check ownership
+    if not check_wallet_ownership(db, current_user.id, wallet_lower):
+        raise HTTPException(status_code=403, detail="Wallet not found in your list")
+
+    category_id = get_wallet_category(current_user.id, wallet_lower)
 
     if category_id:
-        category = get_category_by_id(category_id)
+        category = get_category_by_id(current_user.id, category_id)
         return {"wallet": wallet_lower, "category": category}
 
     return {"wallet": wallet_lower, "category": None}
 
 
 @app.get("/api/report/{wallet}")
-def get_report(wallet: str):
-    """Get markdown report for a wallet."""
+def get_report(
+    wallet: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get markdown report for a wallet. Reports are shared globally (cached data)."""
     wallet = wallet.lower()
+
     report_path = REPORTS_DIR / f"{wallet}.md"
 
+    # If report doesn't exist, return 404 (new wallet, no analysis yet)
+    # This allows frontend to auto-start refresh for new wallets
     if not report_path.exists():
         raise HTTPException(status_code=404, detail="No report found for this wallet")
+
+    # Auto-add wallet to user's list if not already there
+    if not check_wallet_ownership(db, current_user.id, wallet):
+        add_user_wallet(db, current_user.id, wallet)
 
     markdown = report_path.read_text(encoding="utf-8")
     meta = get_wallet_meta(wallet)
@@ -511,11 +710,17 @@ def get_report(wallet: str):
 
 
 @app.get("/api/profile/{wallet}")
-def get_profile(wallet: str):
-    """Get cached profile for a wallet."""
+def get_profile(
+    wallet: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get cached profile for a wallet. Profiles are shared globally (cached data)."""
     wallet = wallet.lower()
+
     profile_path = REPORTS_DIR / f"{wallet}_profile.json"
 
+    # If profile doesn't exist, return 404
     if not profile_path.exists():
         raise HTTPException(status_code=404, detail="No profile found")
 
@@ -524,13 +729,23 @@ def get_profile(wallet: str):
 
 
 @app.post("/api/profile/{wallet}/generate")
-def generate_profile(wallet: str):
+def generate_profile(
+    wallet: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Generate wallet profile from report using LLM. Returns cached if report unchanged."""
     wallet = wallet.lower()
+
     report_path = REPORTS_DIR / f"{wallet}.md"
 
+    # If report doesn't exist, return 404
     if not report_path.exists():
         raise HTTPException(status_code=404, detail="Report not found. Refresh data first.")
+
+    # If report exists but user doesn't own wallet, return 403
+    if not check_wallet_ownership(db, current_user.id, wallet):
+        raise HTTPException(status_code=403, detail="Wallet not found in your list")
 
     markdown = report_path.read_text(encoding="utf-8")
     report_hash = hashlib.md5(markdown.encode("utf-8")).hexdigest()
@@ -565,10 +780,17 @@ def generate_profile(wallet: str):
 
 
 @app.get("/api/portfolio/{wallet}")
-def get_portfolio(wallet: str):
-    """Get portfolio analysis for a wallet. Returns cached if valid."""
+def get_portfolio(
+    wallet: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get portfolio analysis for a wallet. Data is shared globally (cached). Returns cached if valid."""
     wallet = wallet.lower()
+
     filepath = DATA_DIR / f"{wallet}.json"
+
+    # If transaction data doesn't exist, return 404
     if not filepath.exists():
         raise HTTPException(status_code=404, detail="No transaction data found")
 
@@ -581,9 +803,18 @@ def get_portfolio(wallet: str):
 
 
 @app.post("/api/portfolio/{wallet}/refresh")
-def refresh_portfolio(wallet: str):
-    """Force recompute portfolio analysis."""
+def refresh_portfolio(
+    wallet: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Force recompute portfolio analysis (user must own wallet)."""
     wallet = wallet.lower()
+
+    # Check ownership
+    if not check_wallet_ownership(db, current_user.id, wallet):
+        raise HTTPException(status_code=403, detail="Wallet not found in your list")
+
     filepath = DATA_DIR / f"{wallet}.json"
     if not filepath.exists():
         raise HTTPException(status_code=404, detail="No transaction data found")
@@ -968,10 +1199,17 @@ def format_tx_for_frontend(tx: dict) -> dict:
 
 
 @app.get("/api/tx-counts/{wallet}")
-def get_tx_counts(wallet: str):
-    """Get transaction counts per day (lightweight, no formatting)."""
+def get_tx_counts(
+    wallet: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get transaction counts per day. Data is shared globally (cached)."""
     wallet = wallet.lower()
+
     raw_txs = load_transactions(wallet)
+
+    # If no transaction data, return 404
     if not raw_txs:
         raise HTTPException(status_code=404, detail="No transaction data found")
 
@@ -982,10 +1220,19 @@ def get_tx_counts(wallet: str):
 
 
 @app.get("/api/transactions/{wallet}")
-def get_transactions(wallet: str, date_from: str = None, date_to: str = None):
-    """Get wallet transactions, optionally filtered by date range."""
+def get_transactions(
+    wallet: str,
+    date_from: str = None,
+    date_to: str = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get wallet transactions, optionally filtered by date range. Data is shared globally (cached)."""
     wallet = wallet.lower()
+
     raw_txs = load_transactions(wallet)
+
+    # If no transaction data, return 404
     if not raw_txs:
         raise HTTPException(status_code=404, detail="No transaction data found")
 
@@ -1011,26 +1258,41 @@ def get_transactions(wallet: str, date_from: str = None, date_to: str = None):
 
 
 @app.post("/api/refresh/{wallet}")
-def start_refresh(wallet: str):
-    """Start background fetch + analyze for a wallet."""
+def start_refresh(
+    wallet: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Start background fetch + analyze for a wallet (auto-adds to user's list if new)."""
     wallet_lower = wallet.lower()
+
+    # Check ownership or add if new wallet
+    if not check_wallet_ownership(db, current_user.id, wallet_lower):
+        # New wallet - add to user's list
+        add_user_wallet(db, current_user.id, wallet_lower)
+
+    # Load user's refresh status
+    user_refresh_tasks = load_refresh_status(current_user.id)
 
     # Check if thread is already running
     existing_thread = active_threads.get(wallet_lower)
     if existing_thread and existing_thread.is_alive():
-        current = refresh_tasks.get(wallet_lower, {})
+        current = user_refresh_tasks.get(wallet_lower, {})
         return {"status": "already_running", "detail": current.get("detail", "")}
 
     # Check status from disk
-    current = refresh_tasks.get(wallet_lower, {})
+    current = user_refresh_tasks.get(wallet_lower, {})
     if current.get("status") in ("fetching", "analyzing"):
         # Status says running but no thread - might be stale, start new one
         pass
 
-    refresh_tasks[wallet_lower] = {"status": "fetching", "detail": "Starting..."}
-    save_refresh_status(refresh_tasks)
+    user_refresh_tasks[wallet_lower] = {"status": "fetching", "detail": "Starting..."}
+    save_refresh_status(current_user.id, user_refresh_tasks)
 
-    thread = threading.Thread(target=background_refresh, args=(wallet,), daemon=False)
+    # Update global in-memory tracker
+    refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
+
+    thread = threading.Thread(target=background_refresh, args=(wallet, current_user.id), daemon=False)
     thread.start()
     active_threads[wallet_lower] = thread
 
@@ -1038,24 +1300,25 @@ def start_refresh(wallet: str):
 
 
 @app.post("/api/refresh-bulk")
-async def start_bulk_refresh(request: Request):
-    """Start refresh for multiple wallets (all or by category)."""
+async def start_bulk_refresh(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Start refresh for multiple wallets (all or by category) for current user."""
     body = await request.json()
     category_id = body.get("category_id")  # None for all, string for specific category
 
-    # Get list of wallets to refresh
+    # Get list of user's wallets to refresh
     if category_id == "all" or category_id is None:
-        # Get all wallets
-        tags = load_wallet_tags()
-        wallets = []
-        if DATA_DIR.exists():
-            for filepath in sorted(DATA_DIR.glob("*.json")):
-                if filepath.name in ("wallet_tags.json", "categories.json", "refresh_status.json", "excluded_wallets.json"):
-                    continue
-                wallets.append(filepath.stem)
+        # Get all user's wallets
+        user_wallets = db.query(UserWallet).filter(
+            UserWallet.user_id == current_user.id
+        ).all()
+        wallets = [uw.wallet_address for uw in user_wallets]
     else:
         # Get wallets in specific category
-        wallets = get_wallets_by_category(category_id)
+        wallets = get_wallets_by_category(current_user.id, category_id)
 
     if not wallets:
         return {"status": "no_wallets", "started": []}
@@ -1063,6 +1326,7 @@ async def start_bulk_refresh(request: Request):
     # Start refresh for each wallet (if not already running)
     started = []
     already_running = []
+    user_refresh_tasks = load_refresh_status(current_user.id)
 
     for wallet in wallets:
         wallet_lower = wallet.lower()
@@ -1074,15 +1338,16 @@ async def start_bulk_refresh(request: Request):
             continue
 
         # Check status from disk
-        current = refresh_tasks.get(wallet_lower, {})
+        current = user_refresh_tasks.get(wallet_lower, {})
         if current.get("status") in ("fetching", "analyzing"):
             # Status says running but no thread - might be stale, start new one
             pass
 
-        refresh_tasks[wallet_lower] = {"status": "fetching", "detail": "Starting..."}
-        save_refresh_status(refresh_tasks)
+        user_refresh_tasks[wallet_lower] = {"status": "fetching", "detail": "Starting..."}
+        save_refresh_status(current_user.id, user_refresh_tasks)
+        refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
 
-        thread = threading.Thread(target=background_refresh, args=(wallet,), daemon=False)
+        thread = threading.Thread(target=background_refresh, args=(wallet, current_user.id), daemon=False)
         thread.start()
         active_threads[wallet_lower] = thread
         started.append(wallet_lower)
@@ -1096,38 +1361,66 @@ async def start_bulk_refresh(request: Request):
 
 
 @app.get("/api/refresh-status/{wallet}")
-def get_refresh_status(wallet: str):
-    """Check refresh progress for a wallet."""
+def get_refresh_status(
+    wallet: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Check refresh progress for a wallet (user must own it)."""
     wallet_lower = wallet.lower()
-    status = refresh_tasks.get(wallet_lower, {"status": "idle", "detail": ""})
+
+    # Check ownership
+    if not check_wallet_ownership(db, current_user.id, wallet_lower):
+        raise HTTPException(status_code=403, detail="Wallet not found in your list")
+
+    user_refresh_tasks = load_refresh_status(current_user.id)
+    status = user_refresh_tasks.get(wallet_lower, {"status": "idle", "detail": ""})
     return status
 
 
 @app.get("/api/classify-status/{wallet}")
-def get_classify_status(wallet: str):
-    """Check classification progress for related wallets of a wallet."""
+def get_classify_status(
+    wallet: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Check classification progress for related wallets of a wallet (user must own it)."""
     wallet_lower = wallet.lower()
+
+    # Check ownership
+    if not check_wallet_ownership(db, current_user.id, wallet_lower):
+        raise HTTPException(status_code=403, detail="Wallet not found in your list")
+
     task_key = f"classify_{wallet_lower}"
-    status = refresh_tasks.get(task_key, {"status": "idle", "detail": "", "progress": "0/0"})
+    user_refresh_tasks = load_refresh_status(current_user.id)
+    status = user_refresh_tasks.get(task_key, {"status": "idle", "detail": "", "progress": "0/0"})
     return status
 
 
 @app.get("/api/active-tasks")
-def get_active_tasks():
-    """Get all active refresh tasks."""
+def get_active_tasks(current_user: User = Depends(get_current_user)):
+    """Get active refresh tasks for current user."""
+    user_refresh_tasks = load_refresh_status(current_user.id)
     active = {
         wallet: status
-        for wallet, status in refresh_tasks.items()
-        if status.get("status") in ("fetching", "analyzing")
+        for wallet, status in user_refresh_tasks.items()
+        if status.get("status") in ("fetching", "analyzing", "classifying")
     }
     return active
 
 
 @app.get("/api/related-wallets/{wallet}")
-def get_related_wallets(wallet: str):
-    """Find wallets that have bidirectional transfers with this wallet."""
+def get_related_wallets(
+    wallet: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Find wallets that have bidirectional transfers with this wallet. Data is shared globally (cached)."""
     wallet = wallet.lower()
+
     raw_txs = load_transactions(wallet)
+
+    # If no transaction data, return 404
     if not raw_txs:
         raise HTTPException(status_code=404, detail="No transaction data found")
 
@@ -1216,12 +1509,20 @@ def get_related_wallets(wallet: str):
 
 
 @app.get("/api/related-transactions/{wallet}")
-def get_related_transactions(wallet: str, counterparty: str, direction: str = "all"):
-    """Get transfer transactions between wallet and a specific counterparty."""
+def get_related_transactions(
+    wallet: str,
+    counterparty: str,
+    direction: str = "all",
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get transfer transactions between wallet and a specific counterparty. Data is shared globally (cached)."""
     wallet = wallet.lower()
     counterparty = counterparty.lower()
 
     raw_txs = load_transactions(wallet)
+
+    # If no transaction data, return 404
     if not raw_txs:
         raise HTTPException(status_code=404, detail="No transaction data found")
 

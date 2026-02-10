@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import './WalletSidebar.css'
+import { apiCall } from '../utils/api'
 
 const WALLET_ACTIONS = [
   { id: 'report', label: 'Report' },
@@ -34,7 +35,7 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
 
   const fetchCategories = async () => {
     try {
-      const res = await fetch('/api/categories')
+      const res = await apiCall('/api/categories')
       console.log('Categories API response status:', res.status)
       const data = await res.json()
       console.log('Categories data:', data)
@@ -58,7 +59,7 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
 
     // Save expanded state to backend
     try {
-      await fetch(`/api/categories/${categoryId}`, {
+      await apiCall(`/api/categories/${categoryId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ expanded: newExpanded })
@@ -84,7 +85,7 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
     try {
       console.log('Saving category:', categoryModalMode, editingCategory)
       if (categoryModalMode === 'create') {
-        const res = await fetch('/api/categories', {
+        const res = await apiCall('/api/categories', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -139,7 +140,7 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
 
   const handleMoveWalletToCategory = async (walletAddr, categoryId) => {
     try {
-      const res = await fetch(`/api/wallets/${walletAddr}/category`, {
+      const res = await apiCall(`/api/wallets/${walletAddr}/category`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ category_id: categoryId })

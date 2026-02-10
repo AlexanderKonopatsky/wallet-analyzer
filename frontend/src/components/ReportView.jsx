@@ -2,6 +2,7 @@ import { useState, useMemo, memo, useCallback, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 import CalendarStrip from './CalendarStrip'
 import './ReportView.css'
+import { apiCall } from '../utils/api'
 
 function parseReport(markdown) {
   if (!markdown) return { summary: '', sections: [] }
@@ -158,8 +159,8 @@ const DayCard = memo(function DayCard({ id, date, content, walletAddress, isNew,
       setTxLoading(true)
       const dateFrom = dateMatches[0]
       const dateTo = dateMatches.length > 1 ? dateMatches[1] : dateFrom
-      fetch(`/api/transactions/${walletAddress}?date_from=${dateFrom}&date_to=${dateTo}`)
-        .then(res => res.ok ? res.json() : null)
+      apiCall(`/api/transactions/${walletAddress}?date_from=${dateFrom}&date_to=${dateTo}`)
+        .then(res => res && res.ok ? res.json() : null)
         .then(data => {
           if (data) {
             const all = Object.values(data).flat()

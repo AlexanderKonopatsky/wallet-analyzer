@@ -4,6 +4,8 @@ import WalletSidebar from './components/WalletSidebar'
 import ReportView, { TxRow } from './components/ReportView'
 import ProfileView from './components/ProfileView'
 import PortfolioView from './components/PortfolioView'
+import LoginPage from './components/LoginPage'
+import { apiCall, setAuthToken, getUser, logout } from './utils/api'
 
 function countSections(markdown) {
   if (!markdown) return 0
@@ -116,6 +118,11 @@ function RelatedCard({ rw, mainWallet, classificationOverride, classifyingNow })
 }
 
 function App() {
+  // Auth state
+  const [user, setUser] = useState(null)
+  const [authChecking, setAuthChecking] = useState(true)
+
+  // App state
   const [wallets, setWallets] = useState([])
   const [selectedWallet, setSelectedWallet] = useState('')
   const [report, setReport] = useState(null)
@@ -152,6 +159,34 @@ function App() {
   const [classifyingAddrs, setClassifyingAddrs] = useState([]) // currently classifying (batch)
   const [batchSize, setBatchSize] = useState(3) // default, will be loaded from settings
 
+  // Check auth on mount
+  useEffect(() => {
+    const checkAuth = async () => {
+      const storedUser = getUser()
+      if (!storedUser) {
+        setAuthChecking(false)
+        return
+      }
+
+      // Verify token is still valid
+      try {
+        const res = await apiCall('/api/auth/me')
+        if (res && res.ok) {
+          const userData = await res.json()
+          setUser(userData)
+        } else {
+          setUser(null)
+        }
+      } catch {
+        setUser(null)
+      } finally {
+        setAuthChecking(false)
+      }
+    }
+
+    checkAuth()
+  }, [])
+
   // Save classResults to localStorage whenever it changes
   useEffect(() => {
     try {
@@ -161,17 +196,19 @@ function App() {
     }
   }, [classResults])
 
-  // Load settings on mount
+  // Load settings on mount (only if authenticated)
   useEffect(() => {
-    fetch('/api/settings')
-      .then(res => res.ok ? res.json() : null)
+    if (!user) return
+
+    apiCall('/api/settings')
+      .then(res => res && res.ok ? res.json() : null)
       .then(data => {
         if (data?.auto_classify_batch_size) {
           setBatchSize(data.auto_classify_batch_size)
         }
       })
       .catch(() => {})
-  }, [])
+  }, [user])
 
   // Batch auto-classify: when relatedData loads, classify unclassified wallets in batches
   useEffect(() => {
@@ -210,18 +247,18 @@ function App() {
 
             try {
               console.log('[Auto-classify] Classifying:', rw.address)
-              const res = await fetch(`/api/classify-wallet/${rw.address}`, {
+              const res = await apiCall(`/api/classify-wallet/${rw.address}`, {
                 method: 'POST',
                 signal: controller.signal
               })
               clearTimeout(timeout)
 
-              if (res.ok) {
+              if (res && res.ok) {
                 const data = await res.json()
                 console.log('[Auto-classify] Result for', rw.address, ':', data.label, data.is_excluded)
                 return { address: rw.address, data }
               }
-              console.warn('[Auto-classify] Failed for', rw.address, ':', res.status)
+              console.warn('[Auto-classify] Failed for', rw.address, ':', res ? res.status : 'no response')
               return null
             } catch (err) {
               clearTimeout(timeout)
@@ -249,8 +286,8 @@ function App() {
           setClassifyingAddrs([])
           await new Promise(r => setTimeout(r, 300))
           if (!cancelled) {
-            const refreshRes = await fetch(`/api/related-wallets/${relatedWallet.toLowerCase()}`)
-            if (refreshRes.ok) {
+            const refreshRes = await apiCall(`/api/related-wallets/${relatedWallet.toLowerCase()}`)
+            if (refreshRes && refreshRes.ok) {
               const refreshed = await refreshRes.json()
               setRelatedData(refreshed)
             }
@@ -330,9 +367,11 @@ function App() {
 
   // Fetch list of tracked wallets and check for active refresh tasks
   useEffect(() => {
+    if (!user) return
+
     Promise.all([
-      fetch('/api/wallets').then(res => res.json()),
-      fetch('/api/active-tasks').then(res => res.json())
+      apiCall('/api/wallets').then(res => res && res.json()),
+      apiCall('/api/active-tasks').then(res => res && res.json())
     ])
       .then(([walletsData, activeTasks]) => {
         // Initialize localStorage for wallets that don't have it (first time load)
@@ -364,14 +403,15 @@ function App() {
         }
       })
       .catch(() => {})
-  }, [])
+  }, [user])
 
   const currentWallet = wallets.find(w => w.address.toLowerCase() === selectedWallet)
   const currentTag = currentWallet?.tag || ''
 
   const refreshWallets = useCallback(async () => {
     try {
-      const walletsRes = await fetch('/api/wallets')
+      const walletsRes = await apiCall('/api/wallets')
+      if (!walletsRes) return
       const walletsData = await walletsRes.json()
       // Enrich wallets with has_new_data flag
       const enrichedWallets = walletsData.map(w => ({
@@ -386,7 +426,7 @@ function App() {
 
   const saveTag = useCallback(async (wallet, tag) => {
     try {
-      await fetch(`/api/tags/${wallet}`, {
+      await apiCall(`/api/tags/${wallet}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tag })
@@ -404,10 +444,11 @@ function App() {
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch(`/api/report/${wallet.toLowerCase()}`)
+      const res = await apiCall(`/api/report/${wallet.toLowerCase()}`)
+      if (!res) return { missing: false, error: true }
       if (res.status === 404) {
         setReport(null)
-        return { missing: true } // Return flag instead of throwing error
+        return { missing: true }
       }
       if (!res.ok) throw new Error('Failed to load report')
       const data = await res.json()
@@ -430,17 +471,17 @@ function App() {
     setActiveView('profile')
     try {
       if (!forceRegenerate) {
-        const res = await fetch(`/api/profile/${wallet.toLowerCase()}`)
-        if (res.ok) {
+        const res = await apiCall(`/api/profile/${wallet.toLowerCase()}`)
+        if (res && res.ok) {
           setProfile(await res.json())
           setProfileLoading(false)
           return
         }
       }
       // Generate (or regenerate)
-      const genRes = await fetch(`/api/profile/${wallet.toLowerCase()}/generate`, { method: 'POST' })
-      if (!genRes.ok) {
-        const err = await genRes.json()
+      const genRes = await apiCall(`/api/profile/${wallet.toLowerCase()}/generate`, { method: 'POST' })
+      if (!genRes || !genRes.ok) {
+        const err = genRes ? await genRes.json() : {}
         throw new Error(err.detail || 'Failed to generate profile')
       }
       setProfile(await genRes.json())
@@ -462,8 +503,8 @@ function App() {
         ? `/api/portfolio/${wallet.toLowerCase()}/refresh`
         : `/api/portfolio/${wallet.toLowerCase()}`
       const opts = forceRefresh ? { method: 'POST' } : {}
-      const res = await fetch(url, opts)
-      if (!res.ok) throw new Error('Failed to load portfolio')
+      const res = await apiCall(url, opts)
+      if (!res || !res.ok) throw new Error('Failed to load portfolio')
       setPortfolio(await res.json())
     } catch (err) {
       setError(err.message)
@@ -479,8 +520,8 @@ function App() {
     setRelatedLoading(true)
     setRelatedData(null)
     try {
-      const res = await fetch(`/api/related-wallets/${wallet.toLowerCase()}`)
-      if (!res.ok) throw new Error('Failed to load related wallets')
+      const res = await apiCall(`/api/related-wallets/${wallet.toLowerCase()}`)
+      if (!res || !res.ok) throw new Error('Failed to load related wallets')
       const data = await res.json()
       setRelatedData(data)
     } catch (err) {
@@ -500,8 +541,8 @@ function App() {
 
   const handleRestoreWallet = useCallback(async (address) => {
     try {
-      const res = await fetch(`/api/excluded-wallets/${address}`, { method: 'DELETE' })
-      if (res.ok && relatedWallet) {
+      const res = await apiCall(`/api/excluded-wallets/${address}`, { method: 'DELETE' })
+      if (res && res.ok && relatedWallet) {
         fetchRelatedWallets(relatedWallet)
       }
     } catch { /* ignore */ }
@@ -518,7 +559,13 @@ function App() {
 
     const poll = setInterval(async () => {
       try {
-        const statusRes = await fetch(`/api/refresh-status/${wallet.toLowerCase()}`)
+        const statusRes = await apiCall(`/api/refresh-status/${wallet.toLowerCase()}`)
+        if (!statusRes) {
+          clearInterval(poll)
+          setPollInterval(null)
+          setRefreshStatus(null)
+          return
+        }
         const statusData = await statusRes.json()
         setRefreshStatus(statusData)
 
@@ -549,7 +596,9 @@ function App() {
     setError(null)
 
     try {
-      const res = await fetch(`/api/refresh/${wallet}`, { method: 'POST' })
+      const res = await apiCall(`/api/refresh/${wallet}`, { method: 'POST' })
+      if (!res) return
+
       const data = await res.json()
 
       if (data.status === 'already_running') {
@@ -570,11 +619,13 @@ function App() {
     setError(null)
 
     try {
-      const res = await fetch('/api/refresh-bulk', {
+      const res = await apiCall('/api/refresh-bulk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ category_id: categoryId })
       })
+      if (!res) return
+
       const data = await res.json()
 
       if (data.status === 'started') {
@@ -586,7 +637,12 @@ function App() {
         // Start polling for all wallets status
         const pollBulk = setInterval(async () => {
           try {
-            const activeRes = await fetch('/api/active-tasks')
+            const activeRes = await apiCall('/api/active-tasks')
+            if (!activeRes) {
+              clearInterval(pollBulk)
+              setRefreshStatus(null)
+              return
+            }
             const activeTasks = await activeRes.json()
 
             if (Object.keys(activeTasks).length === 0) {
@@ -632,7 +688,11 @@ function App() {
       // Try to load existing report
       setLoading(true)
       try {
-        const res = await fetch(`/api/report/${wallet.toLowerCase()}`)
+        const res = await apiCall(`/api/report/${wallet.toLowerCase()}`)
+        if (!res) {
+          setLoading(false)
+          return
+        }
         if (res.status === 404) {
           // No report exists - this is a new wallet, start refresh automatically
           setLoading(false)
@@ -645,6 +705,8 @@ function App() {
           setReport(data)
           processReportData(wallet, data)
           setLoading(false)
+          // Refresh wallet list (wallet was auto-added to user's list on backend)
+          refreshWallets()
         }
       } catch (err) {
         setError(err.message)
@@ -652,7 +714,24 @@ function App() {
         setLoading(false)
       }
     }
-  }, [startRefresh, processReportData])
+  }, [startRefresh, processReportData, refreshWallets])
+
+  const handleLogin = (token, userData) => {
+    setAuthToken(token, userData)
+    setUser(userData)
+  }
+
+  const handleLogout = () => {
+    logout()
+  }
+
+  if (authChecking) {
+    return <div className="app-loading">Loading...</div>
+  }
+
+  if (!user) {
+    return <LoginPage onLogin={handleLogin} />
+  }
 
   const isRefreshing = refreshStatus &&
     (refreshStatus.status === 'fetching' || refreshStatus.status === 'analyzing')
@@ -661,6 +740,10 @@ function App() {
     <div className="app">
       <header className="app-header">
         <h1><span>DeFi</span> Wallet Monitor</h1>
+        <div className="user-menu">
+          <span className="user-email">{user.email}</span>
+          <button onClick={handleLogout} className="btn-logout">Logout</button>
+        </div>
       </header>
 
       <div className="app-layout">
