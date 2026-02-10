@@ -104,7 +104,8 @@ npm run build
 - Analysis is incremental: only new transactions are processed
 - Background tasks use non-daemon threads (continue independently from browser)
 - When adding a new wallet, fetch + analyze automatically starts
-- **Related wallets auto-classify in background** after analysis completes (DeBank classification with threading lock for stability)
+- **Related wallets auto-classification** is optional (disabled by default, enable with `AUTO_CLASSIFY_ENABLED=true`)
+- When enabled, classification runs in background after analysis completes (DeBank classification with threading lock for stability)
 - Classification continues even if browser is closed - check status via `/api/classify-status/{wallet}`
 
 ## Environment Variables (.env)
@@ -112,7 +113,8 @@ npm run build
 - `CIELO_API_KEY_1..N` — additional keys for rotation
 - `OPENROUTER_API_KEY` — OpenRouter API key for AI analysis
 - `FULL_CHRONOLOGY_COUNT` — number of recent analyses for full context (default: 1)
-- `AUTO_CLASSIFY_BATCH_SIZE` — number of related wallets to classify in parallel (default: 3)
+- `AUTO_CLASSIFY_ENABLED` — enable automatic classification of related wallets after analysis (default: false)
+- `AUTO_CLASSIFY_BATCH_SIZE` — number of related wallets to classify in parallel when auto-classify enabled (default: 3)
 
 ### Context Compression (Advanced)
 - `CONTEXT_COMPRESSION_ENABLED` — enable hierarchical compression (default: true)

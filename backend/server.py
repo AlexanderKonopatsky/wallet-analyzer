@@ -16,10 +16,9 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="repla
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
 
 from main import fetch_all_transactions, load_existing_data, save_data
-from db import init_db, get_db, User, UserWallet
+from db import init_db, get_db, User, Database
 from auth import (
     create_verification_code,
     verify_code,
@@ -119,6 +118,7 @@ PROFILE_SYSTEM_PROMPT = """Ты — опытный ончейн-аналитик
 
 # Wallet classification settings
 # Note: DeBank classification uses a lock, so parallel requests are serialized anyway
+AUTO_CLASSIFY_ENABLED = os.getenv("AUTO_CLASSIFY_ENABLED", "false").lower() == "true"
 AUTO_CLASSIFY_BATCH_SIZE = int(os.getenv("AUTO_CLASSIFY_BATCH_SIZE", 1))
 
 # DeBank classification lock (Playwright is not thread-safe)
@@ -194,26 +194,24 @@ def save_excluded_wallets(excluded: dict) -> None:
         json.dump(excluded, f, indent=2, ensure_ascii=False)
 
 
-def check_wallet_ownership(db: Session, user_id: int, wallet_address: str) -> bool:
+def check_wallet_ownership(db: Database, user_id: int, wallet_address: str) -> bool:
     """Check if user owns this wallet."""
-    return db.query(UserWallet).filter(
-        UserWallet.user_id == user_id,
-        UserWallet.wallet_address == wallet_address.lower()
-    ).first() is not None
+    user = db.get_user_by_id(user_id)
+    if not user:
+        return False
+    wallet_lower = wallet_address.lower()
+    return wallet_lower in [w.lower() for w in user.wallet_addresses]
 
 
-def add_user_wallet(db: Session, user_id: int, wallet_address: str):
+def add_user_wallet(db: Database, user_id: int, wallet_address: str):
     """Add wallet to user's tracked wallets."""
     wallet_address = wallet_address.lower()
-    existing = db.query(UserWallet).filter(
-        UserWallet.user_id == user_id,
-        UserWallet.wallet_address == wallet_address
-    ).first()
+    user = db.get_user_by_id(user_id)
+    if not user:
+        print(f"[DB] Error: User {user_id} not found")
+        return
 
-    if not existing:
-        user_wallet = UserWallet(user_id=user_id, wallet_address=wallet_address)
-        db.add(user_wallet)
-        db.commit()
+    if db.add_wallet_to_user(user, wallet_address):
         print(f"[DB] Added wallet {wallet_address} for user {user_id}")
 
 
@@ -366,16 +364,19 @@ def background_refresh(wallet: str, user_id: int) -> None:
         save_refresh_status(user_id, user_refresh_tasks)
         refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
 
-        # Step 3: Auto-classify related wallets in background
-        print(f"[Refresh] Step 3: Starting auto-classification for {wallet_lower}", flush=True)
-        classify_thread = threading.Thread(
-            target=classify_related_wallets_background,
-            args=(wallet_lower,),
-            daemon=False  # Non-daemon so it continues after browser closes
-        )
-        task_key = f"classify_{wallet_lower}"
-        active_threads[task_key] = classify_thread
-        classify_thread.start()
+        # Step 3: Auto-classify related wallets in background (if enabled)
+        if AUTO_CLASSIFY_ENABLED:
+            print(f"[Refresh] Step 3: Starting auto-classification for {wallet_lower}", flush=True)
+            classify_thread = threading.Thread(
+                target=classify_related_wallets_background,
+                args=(wallet_lower,),
+                daemon=False  # Non-daemon so it continues after browser closes
+            )
+            task_key = f"classify_{wallet_lower}"
+            active_threads[task_key] = classify_thread
+            classify_thread.start()
+        else:
+            print(f"[Refresh] Step 3: Auto-classification disabled (AUTO_CLASSIFY_ENABLED=false)", flush=True)
 
     except Exception as e:
         print(f"[Refresh] ERROR for {wallet_lower}: {e}", flush=True)
@@ -418,7 +419,7 @@ class GoogleAuthRequest(BaseModel):
 
 
 @app.post("/api/auth/request-code")
-async def request_code(body: RequestCodeRequest, db: Session = Depends(get_db)):
+async def request_code(body: RequestCodeRequest, db: Database = Depends(get_db)):
     """Send verification code to email."""
     try:
         email = body.email.lower().strip()
@@ -430,7 +431,7 @@ async def request_code(body: RequestCodeRequest, db: Session = Depends(get_db)):
 
 
 @app.post("/api/auth/verify-code")
-async def verify_code_endpoint(body: VerifyCodeRequest, db: Session = Depends(get_db)):
+async def verify_code_endpoint(body: VerifyCodeRequest, db: Database = Depends(get_db)):
     """Verify code and return JWT token."""
     email = body.email.lower().strip()
     user = verify_code(db, email, body.code)
@@ -450,7 +451,7 @@ async def verify_code_endpoint(body: VerifyCodeRequest, db: Session = Depends(ge
 
 
 @app.post("/api/auth/google")
-async def google_auth(body: GoogleAuthRequest, db: Session = Depends(get_db)):
+async def google_auth(body: GoogleAuthRequest, db: Database = Depends(get_db)):
     """Authenticate with Google OAuth token."""
     # Verify Google token
     google_info = verify_google_token(body.token)
@@ -489,6 +490,7 @@ async def get_me(current_user: User = Depends(get_current_user)):
 def get_settings():
     """Get application settings."""
     return {
+        "auto_classify_enabled": AUTO_CLASSIFY_ENABLED,
         "auto_classify_batch_size": AUTO_CLASSIFY_BATCH_SIZE,
     }
 
@@ -496,19 +498,16 @@ def get_settings():
 @app.get("/api/wallets")
 def list_wallets(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Database = Depends(get_db)
 ):
     """List user's tracked wallets."""
     tags = load_wallet_tags(current_user.id)
 
     # Get user's wallets from DB
-    user_wallets = db.query(UserWallet).filter(
-        UserWallet.user_id == current_user.id
-    ).all()
+    wallet_addresses = current_user.wallet_addresses
 
     wallets = []
-    for uw in user_wallets:
-        address = uw.wallet_address
+    for address in wallet_addresses:
         meta = get_wallet_meta(address)
         if meta:
             report_path = REPORTS_DIR / f"{address}.md"
@@ -539,7 +538,7 @@ async def set_tag(
     wallet: str,
     request: Request,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Database = Depends(get_db)
 ):
     """Set tag/name for a wallet (user must own it)."""
     wallet_lower = wallet.lower()
@@ -636,7 +635,7 @@ async def assign_wallet_category(
     wallet: str,
     request: Request,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Database = Depends(get_db)
 ):
     """Assign wallet to a category or remove from category (set to null)."""
     wallet_lower = wallet.lower()
@@ -660,7 +659,7 @@ async def assign_wallet_category(
 def get_wallet_category_info(
     wallet: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Database = Depends(get_db)
 ):
     """Get category info for a specific wallet (user must own it)."""
     wallet_lower = wallet.lower()
@@ -682,7 +681,7 @@ def get_wallet_category_info(
 def get_report(
     wallet: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Database = Depends(get_db)
 ):
     """Get markdown report for a wallet. Reports are shared globally (cached data)."""
     wallet = wallet.lower()
@@ -713,7 +712,7 @@ def get_report(
 def get_profile(
     wallet: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Database = Depends(get_db)
 ):
     """Get cached profile for a wallet. Profiles are shared globally (cached data)."""
     wallet = wallet.lower()
@@ -732,7 +731,7 @@ def get_profile(
 def generate_profile(
     wallet: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Database = Depends(get_db)
 ):
     """Generate wallet profile from report using LLM. Returns cached if report unchanged."""
     wallet = wallet.lower()
@@ -783,7 +782,7 @@ def generate_profile(
 def get_portfolio(
     wallet: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Database = Depends(get_db)
 ):
     """Get portfolio analysis for a wallet. Data is shared globally (cached). Returns cached if valid."""
     wallet = wallet.lower()
@@ -806,7 +805,7 @@ def get_portfolio(
 def refresh_portfolio(
     wallet: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Database = Depends(get_db)
 ):
     """Force recompute portfolio analysis (user must own wallet)."""
     wallet = wallet.lower()
@@ -1202,7 +1201,7 @@ def format_tx_for_frontend(tx: dict) -> dict:
 def get_tx_counts(
     wallet: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Database = Depends(get_db)
 ):
     """Get transaction counts per day. Data is shared globally (cached)."""
     wallet = wallet.lower()
@@ -1225,7 +1224,7 @@ def get_transactions(
     date_from: str = None,
     date_to: str = None,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Database = Depends(get_db)
 ):
     """Get wallet transactions, optionally filtered by date range. Data is shared globally (cached)."""
     wallet = wallet.lower()
@@ -1261,7 +1260,7 @@ def get_transactions(
 def start_refresh(
     wallet: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Database = Depends(get_db)
 ):
     """Start background fetch + analyze for a wallet (auto-adds to user's list if new)."""
     wallet_lower = wallet.lower()
@@ -1303,7 +1302,7 @@ def start_refresh(
 async def start_bulk_refresh(
     request: Request,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Database = Depends(get_db)
 ):
     """Start refresh for multiple wallets (all or by category) for current user."""
     body = await request.json()
@@ -1312,10 +1311,7 @@ async def start_bulk_refresh(
     # Get list of user's wallets to refresh
     if category_id == "all" or category_id is None:
         # Get all user's wallets
-        user_wallets = db.query(UserWallet).filter(
-            UserWallet.user_id == current_user.id
-        ).all()
-        wallets = [uw.wallet_address for uw in user_wallets]
+        wallets = current_user.wallet_addresses
     else:
         # Get wallets in specific category
         wallets = get_wallets_by_category(current_user.id, category_id)
@@ -1364,7 +1360,7 @@ async def start_bulk_refresh(
 def get_refresh_status(
     wallet: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Database = Depends(get_db)
 ):
     """Check refresh progress for a wallet (user must own it)."""
     wallet_lower = wallet.lower()
@@ -1382,7 +1378,7 @@ def get_refresh_status(
 def get_classify_status(
     wallet: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Database = Depends(get_db)
 ):
     """Check classification progress for related wallets of a wallet (user must own it)."""
     wallet_lower = wallet.lower()
@@ -1413,7 +1409,7 @@ def get_active_tasks(current_user: User = Depends(get_current_user)):
 def get_related_wallets(
     wallet: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Database = Depends(get_db)
 ):
     """Find wallets that have bidirectional transfers with this wallet. Data is shared globally (cached)."""
     wallet = wallet.lower()
@@ -1514,7 +1510,7 @@ def get_related_transactions(
     counterparty: str,
     direction: str = "all",
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Database = Depends(get_db)
 ):
     """Get transfer transactions between wallet and a specific counterparty. Data is shared globally (cached)."""
     wallet = wallet.lower()

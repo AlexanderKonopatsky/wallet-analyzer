@@ -219,7 +219,8 @@ async def refresh_wallet(wallet):
 **Optional**:
 - `CIELO_API_KEY_1..99` — additional keys for rotation
 - `FULL_CHRONOLOGY_COUNT` — how many recent analyses to use for context (default: 1)
-- `AUTO_CLASSIFY_BATCH_SIZE` — parallel classification of related wallets (default: 3)
+- `AUTO_CLASSIFY_ENABLED` — enable automatic classification of related wallets after analysis (default: false)
+- `AUTO_CLASSIFY_BATCH_SIZE` — parallel classification of related wallets when auto-classify enabled (default: 3)
 
 ## Error Handling Best Practices
 

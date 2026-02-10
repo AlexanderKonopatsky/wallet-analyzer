@@ -13,11 +13,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict
 import jwt
 from fastapi import HTTPException, Depends, Header
-from sqlalchemy.orm import Session
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
-from db import get_db, User, VerificationCode
+from db import get_db, User, Database
 from email_service import send_verification_code
 
 # JWT configuration
@@ -34,12 +33,12 @@ def generate_verification_code() -> str:
     return str(secrets.randbelow(1000000)).zfill(6)
 
 
-def create_verification_code(db: Session, email: str) -> str:
+def create_verification_code(db: Database, email: str) -> str:
     """
     Create and send verification code for email.
 
     Args:
-        db: Database session
+        db: Database instance
         email: User email address
 
     Returns:
@@ -49,20 +48,10 @@ def create_verification_code(db: Session, email: str) -> str:
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
 
     # Invalidate all previous unused codes for this email
-    db.query(VerificationCode).filter(
-        VerificationCode.email == email,
-        VerificationCode.used == False
-    ).update({"used": True})
-    db.commit()
+    db.invalidate_codes_for_email(email)
 
     # Create new code
-    vcode = VerificationCode(
-        email=email,
-        code=code,
-        expires_at=expires_at
-    )
-    db.add(vcode)
-    db.commit()
+    db.create_verification_code(email, code, expires_at)
 
     # Send email
     send_verification_code(email, code)
@@ -70,12 +59,12 @@ def create_verification_code(db: Session, email: str) -> str:
     return code
 
 
-def verify_code(db: Session, email: str, code: str) -> Optional[User]:
+def verify_code(db: Database, email: str, code: str) -> Optional[User]:
     """
     Verify code and return/create user.
 
     Args:
-        db: Database session
+        db: Database instance
         email: User email address
         code: Verification code to verify
 
@@ -83,32 +72,22 @@ def verify_code(db: Session, email: str, code: str) -> Optional[User]:
         User object if code is valid, None otherwise
     """
     # Find valid code (not used, not expired)
-    vcode = db.query(VerificationCode).filter(
-        VerificationCode.email == email,
-        VerificationCode.code == code,
-        VerificationCode.used == False,
-        VerificationCode.expires_at > datetime.now(timezone.utc)
-    ).first()
+    vcode = db.get_valid_code(email, code)
 
     if not vcode:
         return None
 
     # Mark code as used
-    vcode.used = True
-    db.commit()
+    db.mark_code_used(vcode)
 
     # Get or create user
-    user = db.query(User).filter(User.email == email).first()
+    user = db.get_user_by_email(email)
     if not user:
         print(f"[Auth] Creating new user: {email}")
-        user = User(email=email)
-        db.add(user)
-        db.commit()
+        user = db.create_user(email)
 
     # Update last login
-    user.last_login = datetime.now(timezone.utc)
-    db.commit()
-    db.refresh(user)
+    db.update_user_login(user)
 
     return user
 
@@ -153,7 +132,7 @@ def decode_jwt_token(token: str) -> Optional[dict]:
 
 async def get_current_user(
     authorization: Optional[str] = Header(None),
-    db: Session = Depends(get_db)
+    db: Database = Depends(get_db)
 ) -> User:
     """
     FastAPI dependency: extract and validate current user from JWT.
@@ -173,7 +152,7 @@ async def get_current_user(
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-    user = db.query(User).filter(User.id == payload["user_id"]).first()
+    user = db.get_user_by_id(payload["user_id"])
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
@@ -222,12 +201,12 @@ def verify_google_token(token: str) -> Optional[Dict]:
         return None
 
 
-def get_or_create_user_from_google(db: Session, google_info: Dict) -> User:
+def get_or_create_user_from_google(db: Database, google_info: Dict) -> User:
     """
     Get or create user from Google OAuth info.
 
     Args:
-        db: Database session
+        db: Database instance
         google_info: Dict with 'email', 'name', 'picture' from Google
 
     Returns:
@@ -236,18 +215,14 @@ def get_or_create_user_from_google(db: Session, google_info: Dict) -> User:
     email = google_info['email'].lower().strip()
 
     # Find existing user
-    user = db.query(User).filter(User.email == email).first()
+    user = db.get_user_by_email(email)
 
     if not user:
         # Create new user
         print(f"[Auth] Creating new user from Google: {email}")
-        user = User(email=email)
-        db.add(user)
-        db.commit()
+        user = db.create_user(email)
 
     # Update last login
-    user.last_login = datetime.now(timezone.utc)
-    db.commit()
-    db.refresh(user)
+    db.update_user_login(user)
 
     return user
