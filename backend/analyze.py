@@ -734,6 +734,7 @@ def analyze_wallet(wallet: str) -> None:
         context = build_context_for_llm(chronology_parts, compression_cache)
 
         # Save context for inspection
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
         context_path = REPORTS_DIR / f"{wallet.lower()}_context.md"
         with open(context_path, "w", encoding="utf-8") as f:
             f.write(f"# LLM Context for chunk {i + 1}/{total_chunks}\n\n{context}")

@@ -82,6 +82,8 @@ def fetch_all_transactions(wallet: str, existing_txs: dict) -> list:
     start_from = None
     page = 1
     new_count = 0
+    pending_retries = 0
+    max_pending_retries = 3
 
     while True:
         # Rate limiting: 10 credits/sec, 3 credits per request = max ~3 req/sec
@@ -100,8 +102,18 @@ def fetch_all_transactions(wallet: str, existing_txs: dict) -> list:
 
         status = result.get("status")
         if status == "pending":
-            print("Data is loading (first request for this wallet). Try again in a few seconds.")
-            return []
+            if page == 1 and pending_retries < max_pending_retries:
+                # First request for this wallet - wait and retry
+                pending_retries += 1
+                wait_time = 5 * pending_retries  # Progressive backoff: 5s, 10s, 15s
+                print(f"Data is loading (first request for this wallet). Waiting {wait_time} seconds... (attempt {pending_retries}/{max_pending_retries})")
+                time.sleep(wait_time)
+                continue
+            else:
+                # Max retries reached or unexpected state
+                msg = f"Max retries ({max_pending_retries}) reached" if page == 1 else "Unexpected 'pending' status on page > 1"
+                print(f"  → {msg}. Data may not be indexed yet. Try again later.")
+                raise Exception("No transaction data available yet. Data is still loading from API. Please try again in a few minutes.")
         elif status != "ok":
             print(f"API Error: {result.get('message', 'unknown error')}")
             return []
