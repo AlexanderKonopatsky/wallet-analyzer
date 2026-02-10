@@ -15,6 +15,8 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="repla
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from main import fetch_all_transactions, load_existing_data, save_data
@@ -86,11 +88,22 @@ CHAIN_EXPLORERS = {
 
 app = FastAPI()
 
+# CORS: support both local development and production
+allowed_origins = [
+    "http://localhost:5173",
+    "http://localhost:5174",
+]
+# Add Railway production URL if set
+railway_url = os.getenv("RAILWAY_PUBLIC_DOMAIN")
+if railway_url:
+    allowed_origins.append(f"https://{railway_url}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174"],
+    allow_origins=allowed_origins,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
 
 
@@ -1546,6 +1559,30 @@ def get_related_transactions(
 
     result.sort(key=lambda x: x.get("timestamp", 0))
     return result
+
+
+# Serve frontend static files (for production)
+FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
+if FRONTEND_DIST.exists():
+    # Serve static assets (JS, CSS, images)
+    app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="assets")
+
+    # Catch-all route for SPA (must be last)
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        # If path is API route, let it pass through to API handlers
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="API endpoint not found")
+
+        # Check if file exists
+        file_path = FRONTEND_DIST / full_path
+        if file_path.is_file():
+            return FileResponse(file_path)
+
+        # Otherwise serve index.html (SPA routing)
+        return FileResponse(FRONTEND_DIST / "index.html")
+else:
+    print("⚠️  Frontend dist folder not found. Running in API-only mode.")
 
 
 if __name__ == "__main__":
