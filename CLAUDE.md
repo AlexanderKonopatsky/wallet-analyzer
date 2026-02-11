@@ -80,6 +80,7 @@ npm run build
 ### Common Tasks
 - **Add new wallet**: Frontend → POST `/api/refresh/{wallet}` → auto fetch + analyze
 - **Update wallet**: WalletSidebar refresh button → background task
+- **Auto-refresh wallets**: Enable `AUTO_REFRESH_ENABLED=true` in `.env` → all wallets refreshed daily at `AUTO_REFRESH_TIME`
 - **View report**: ReportView loads `reports/{wallet}.md`
 - **Classify related wallet**: ReportView → "Classify" button → DeBank protocol detection
 - **Exclude wallet**: Related card → "Exclude" → saved to `excluded_wallets.json`
@@ -107,6 +108,9 @@ npm run build
 - **Related wallets auto-classification** is optional (disabled by default, enable with `AUTO_CLASSIFY_ENABLED=true`)
 - When enabled, classification runs in background after analysis completes (DeBank classification with threading lock for stability)
 - Classification continues even if browser is closed - check status via `/api/classify-status/{wallet}`
+- **Scheduled auto-refresh** is optional (disabled by default, enable with `AUTO_REFRESH_ENABLED=true`)
+- When enabled, all wallets for all users are automatically refreshed at the scheduled time (default: 23:00)
+- Auto-refresh skips wallets that are already being refreshed to avoid conflicts
 
 ## Environment Variables (.env)
 - `CIELO_API_KEY` — primary Cielo Finance API key
@@ -115,6 +119,8 @@ npm run build
 - `FULL_CHRONOLOGY_COUNT` — number of recent analyses for full context (default: 1)
 - `AUTO_CLASSIFY_ENABLED` — enable automatic classification of related wallets after analysis (default: false)
 - `AUTO_CLASSIFY_BATCH_SIZE` — number of related wallets to classify in parallel when auto-classify enabled (default: 3)
+- `AUTO_REFRESH_ENABLED` — enable automatic scheduled refresh of all wallets (default: false)
+- `AUTO_REFRESH_TIME` — time to run auto-refresh in UTC, 24-hour format, e.g., "23:00" (default: 23:00)
 
 ### Context Compression (Advanced)
 - `CONTEXT_COMPRESSION_ENABLED` — enable hierarchical compression (default: true)

@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -110,8 +111,16 @@ app.add_middleware(
 
 @app.on_event("startup")
 def startup_event():
-    """Initialize database on startup."""
+    """Initialize database and start scheduler on startup."""
     init_db()
+
+    # Start auto-refresh scheduler if enabled
+    if AUTO_REFRESH_ENABLED:
+        scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+        scheduler_thread.start()
+        print(f"[Scheduler] Auto-refresh enabled: will run daily at {AUTO_REFRESH_TIME} UTC")
+    else:
+        print("[Scheduler] Auto-refresh disabled (AUTO_REFRESH_ENABLED=false)")
 
 # Path relative to project root
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -142,6 +151,10 @@ PROFILE_SYSTEM_PROMPT = """Ты — опытный ончейн-аналитик
 # Note: DeBank classification uses a lock, so parallel requests are serialized anyway
 AUTO_CLASSIFY_ENABLED = os.getenv("AUTO_CLASSIFY_ENABLED", "false").lower() == "true"
 AUTO_CLASSIFY_BATCH_SIZE = int(os.getenv("AUTO_CLASSIFY_BATCH_SIZE", 1))
+
+# Auto-refresh settings
+AUTO_REFRESH_ENABLED = os.getenv("AUTO_REFRESH_ENABLED", "false").lower() == "true"
+AUTO_REFRESH_TIME = os.getenv("AUTO_REFRESH_TIME", "23:00")
 
 # DeBank classification lock (Playwright is not thread-safe)
 debank_lock = threading.Lock()
@@ -585,6 +598,8 @@ def get_settings():
     return {
         "auto_classify_enabled": AUTO_CLASSIFY_ENABLED,
         "auto_classify_batch_size": AUTO_CLASSIFY_BATCH_SIZE,
+        "auto_refresh_enabled": AUTO_REFRESH_ENABLED,
+        "auto_refresh_time": AUTO_REFRESH_TIME,
     }
 
 
@@ -1193,6 +1208,99 @@ def classify_related_wallets_background(wallet: str) -> None:
     finally:
         # Clean up thread reference
         active_threads.pop(task_key, None)
+
+
+def auto_refresh_all_wallets() -> None:
+    """Auto-refresh all wallets for all users (scheduled task)."""
+    try:
+        print(f"[Auto-Refresh] Starting scheduled refresh at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
+
+        # Get database connection (singleton with loaded data)
+        from db import get_database
+        db = get_database()
+
+        # Get all users
+        all_users = db.get_all_users()
+
+        if not all_users:
+            print("[Auto-Refresh] No users found, skipping")
+            return
+
+        total_wallets = 0
+        total_started = 0
+
+        for user in all_users:
+            user_id = user.id
+            wallets = user.wallet_addresses
+
+            if not wallets:
+                continue
+
+            print(f"[Auto-Refresh] Processing {len(wallets)} wallets for user {user_id}")
+
+            # Load user's refresh status
+            user_refresh_tasks = load_refresh_status(user_id)
+
+            for wallet in wallets:
+                wallet_lower = wallet.lower()
+                total_wallets += 1
+
+                # Check if already running
+                existing_thread = active_threads.get(wallet_lower)
+                if existing_thread and existing_thread.is_alive():
+                    print(f"[Auto-Refresh] Skipping {wallet_lower} (already running)")
+                    continue
+
+                # Check status from disk
+                current = user_refresh_tasks.get(wallet_lower, {})
+                if current.get("status") in ("fetching", "analyzing"):
+                    print(f"[Auto-Refresh] Skipping {wallet_lower} (status: {current.get('status')})")
+                    continue
+
+                # Start refresh
+                print(f"[Auto-Refresh] Starting refresh for {wallet_lower} (user {user_id})")
+                user_refresh_tasks[wallet_lower] = {"status": "fetching", "detail": "Auto-refresh: Starting..."}
+                save_refresh_status(user_id, user_refresh_tasks)
+                refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
+
+                thread = threading.Thread(target=background_refresh, args=(wallet, user_id), daemon=False)
+                thread.start()
+                active_threads[wallet_lower] = thread
+                total_started += 1
+
+        print(f"[Auto-Refresh] Completed: {total_started}/{total_wallets} wallets started, {total_wallets - total_started} skipped")
+
+    except Exception as e:
+        print(f"[Auto-Refresh] Error during scheduled refresh: {e}")
+
+
+def run_scheduler() -> None:
+    """Background thread to run scheduled tasks (using UTC time)."""
+    print(f"[Scheduler] Starting scheduler thread (auto-refresh at {AUTO_REFRESH_TIME} UTC)")
+
+    # Parse target time (HH:MM format)
+    target_hour, target_minute = map(int, AUTO_REFRESH_TIME.split(":"))
+    last_run_date = None
+
+    while True:
+        try:
+            now_utc = datetime.now(timezone.utc)
+            current_date = now_utc.date()
+            current_time = now_utc.time()
+
+            # Check if it's time to run (target time reached and not run today yet)
+            if (current_time.hour == target_hour and
+                current_time.minute == target_minute and
+                last_run_date != current_date):
+
+                print(f"[Scheduler] Triggering auto-refresh at {now_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC")
+                auto_refresh_all_wallets()
+                last_run_date = current_date
+
+            time.sleep(60)  # Check every minute
+        except Exception as e:
+            print(f"[Scheduler] Error in scheduler loop: {e}")
+            time.sleep(60)
 
 
 @app.get("/api/excluded-wallets")

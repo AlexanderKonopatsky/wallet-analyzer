@@ -119,6 +119,10 @@ class Database:
                 return user
         return None
 
+    def get_all_users(self) -> List[User]:
+        """Get all users."""
+        return self.users
+
     def create_user(self, email: str) -> User:
         """Create new user."""
         user = User(
