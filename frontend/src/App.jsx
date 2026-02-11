@@ -862,8 +862,22 @@ function App() {
               </button>
               {refreshStatus && (
                 <span className={`refresh-status status-${refreshStatus.status}`}>
-                  {refreshStatus.status === 'fetching' && '● Fetching transactions...'}
-                  {refreshStatus.status === 'analyzing' && '● AI analysis...'}
+                  {refreshStatus.status === 'fetching' && (
+                    <>
+                      ● Fetching transactions
+                      {refreshStatus.new_count !== undefined && refreshStatus.total_count !== undefined && (
+                        <> — {refreshStatus.new_count} new, {refreshStatus.total_count} total</>
+                      )}
+                    </>
+                  )}
+                  {refreshStatus.status === 'analyzing' && (
+                    <>
+                      ● AI analysis
+                      {refreshStatus.percent !== undefined && (
+                        <> — {refreshStatus.percent}%</>
+                      )}
+                    </>
+                  )}
                   {refreshStatus.status === 'done' && '✓ Done!'}
                   {refreshStatus.status === 'error' && '✗ Error'}
                 </span>

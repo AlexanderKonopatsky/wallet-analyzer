@@ -312,8 +312,14 @@ def get_wallet_meta(wallet: str) -> dict:
     }
 
 
-def run_analysis_pipeline(wallet: str) -> None:
-    """Run the analyze.py pipeline without interactive prompts."""
+def run_analysis_pipeline(wallet: str, user_id: int = None, progress_callback=None) -> None:
+    """Run the analyze.py pipeline without interactive prompts.
+
+    Args:
+        wallet: Wallet address
+        user_id: User ID for status updates
+        progress_callback: Optional callback(current_chunk, total_chunks, percent) to report progress
+    """
     raw_txs = load_transactions(wallet)
     if not raw_txs:
         return
@@ -384,10 +390,20 @@ def run_analysis_pipeline(wallet: str) -> None:
 
 Опиши хронологию действий пользователя по дням."""
 
-        print(f"📊 Анализ chunk {i + 1}/{total_chunks} для кошелька {wallet[:10]}... ({len(formatted_lines)} транзакций)")
+        # Report progress before LLM call
+        current_percent = int((i / total_chunks) * 100)
+        print(f"📊 Анализ chunk {i + 1}/{total_chunks} для кошелька {wallet[:10]}... ({len(formatted_lines)} транзакций, {current_percent}%)")
+        if progress_callback:
+            progress_callback(i + 1, total_chunks, current_percent)
+
         response = call_llm(SYSTEM_PROMPT, user_prompt)
         chronology = parse_llm_response(response)
-        print(f"✅ Chunk {i + 1}/{total_chunks} обработан")
+
+        # Report progress after LLM call
+        completed_percent = int(((i + 1) / total_chunks) * 100)
+        print(f"✅ Chunk {i + 1}/{total_chunks} обработан ({completed_percent}%)")
+        if progress_callback:
+            progress_callback(i + 1, total_chunks, completed_percent)
 
         if chronology:
             chronology_parts = merge_chronology_parts(chronology_parts, chronology)
@@ -420,17 +436,42 @@ def background_refresh(wallet: str, user_id: int) -> None:
         # Step 1: Fetch transactions
         print(f"[Refresh] Step 1: Fetching transactions for {wallet_lower} (user {user_id})", flush=True)
         user_refresh_tasks = load_refresh_status(user_id)
-        user_refresh_tasks[wallet_lower] = {"status": "fetching", "detail": "Fetching transactions from API..."}
+        user_refresh_tasks[wallet_lower] = {"status": "fetching", "detail": "Fetching transactions from API...", "new_count": 0, "total_count": 0}
         save_refresh_status(user_id, user_refresh_tasks)
         refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
 
         existing_data = load_existing_data(wallet)
         existing_txs = {tx["tx_hash"]: tx for tx in existing_data["transactions"]}
+        initial_count = len(existing_txs)
 
-        all_transactions = fetch_all_transactions(wallet, existing_txs)
+        # Progress callback to update status
+        def fetch_progress(new_count, total_count):
+            user_refresh_tasks = load_refresh_status(user_id)
+            user_refresh_tasks[wallet_lower] = {
+                "status": "fetching",
+                "detail": f"Received {new_count} new transactions (total: {total_count})",
+                "new_count": new_count,
+                "total_count": total_count
+            }
+            save_refresh_status(user_id, user_refresh_tasks)
+            refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
+
+        all_transactions = fetch_all_transactions(wallet, existing_txs, progress_callback=fetch_progress)
         if all_transactions:
             all_transactions.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
             save_data(wallet, all_transactions)
+
+        # Final fetch status
+        final_new_count = len(all_transactions) - initial_count
+        user_refresh_tasks = load_refresh_status(user_id)
+        user_refresh_tasks[wallet_lower] = {
+            "status": "fetching",
+            "detail": f"Fetched {final_new_count} new transactions (total: {len(all_transactions)})",
+            "new_count": final_new_count,
+            "total_count": len(all_transactions)
+        }
+        save_refresh_status(user_id, user_refresh_tasks)
+        refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
 
         # Check if we have any data at all (either newly fetched or existing)
         data_file = DATA_DIR / f"{wallet_lower}.json"
@@ -451,11 +492,24 @@ def background_refresh(wallet: str, user_id: int) -> None:
 
         print(f"[Refresh] Step 2: Analyzing transactions for {wallet_lower}", flush=True)
         user_refresh_tasks = load_refresh_status(user_id)
-        user_refresh_tasks[wallet_lower] = {"status": "analyzing", "detail": "Analyzing transactions with AI..."}
+        user_refresh_tasks[wallet_lower] = {"status": "analyzing", "detail": "Analyzing transactions with AI...", "percent": 0}
         save_refresh_status(user_id, user_refresh_tasks)
         refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
 
-        run_analysis_pipeline(wallet)
+        # Progress callback for analysis
+        def analysis_progress(current_chunk, total_chunks, percent):
+            user_refresh_tasks = load_refresh_status(user_id)
+            user_refresh_tasks[wallet_lower] = {
+                "status": "analyzing",
+                "detail": f"Analyzing chunk {current_chunk}/{total_chunks}",
+                "current_chunk": current_chunk,
+                "total_chunks": total_chunks,
+                "percent": percent
+            }
+            save_refresh_status(user_id, user_refresh_tasks)
+            refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
+
+        run_analysis_pipeline(wallet, user_id=user_id, progress_callback=analysis_progress)
 
         print(f"[Refresh] Step 2 done: Analysis complete for {wallet_lower}", flush=True)
         user_refresh_tasks = load_refresh_status(user_id)

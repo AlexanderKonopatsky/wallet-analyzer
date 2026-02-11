@@ -76,9 +76,14 @@ def _api_request(params: dict) -> requests.Response:
         return response
 
 
-def fetch_all_transactions(wallet: str, existing_txs: dict) -> list:
+def fetch_all_transactions(wallet: str, existing_txs: dict, progress_callback=None) -> list:
     """Fetches all wallet transactions with pagination (100 per request).
     Saves data after each page for protection against interruption.
+
+    Args:
+        wallet: Wallet address
+        existing_txs: Dict of existing transactions {tx_hash: tx}
+        progress_callback: Optional callback(new_count, total_count) to report progress
 
     Optimization: API returns transactions in reverse-chronological order (newest first).
     If we encounter consecutive duplicates, it means we've reached already-fetched older data,
@@ -157,6 +162,10 @@ def fetch_all_transactions(wallet: str, existing_txs: dict) -> list:
             all_transactions.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
             save_data(wallet, all_transactions)
             print(f"  ✅ Сохранено {page_new_count} новых транзакций (всего новых: {new_count})")
+
+            # Report progress
+            if progress_callback:
+                progress_callback(new_count, len(existing_txs))
         else:
             print(f"  → No new transactions on this page (all duplicates)")
 
@@ -319,7 +328,11 @@ def main() -> None:
         print(f"Found {len(existing_txs)} saved transactions")
 
     try:
-        all_transactions = fetch_all_transactions(wallet, existing_txs)
+        # Progress callback for console output
+        def show_progress(new_count, total_count):
+            print(f"  → Progress: {new_count} new, {total_count} total")
+
+        all_transactions = fetch_all_transactions(wallet, existing_txs, progress_callback=show_progress)
     except requests.RequestException as e:
         print(f"Request error: {e}")
         return
