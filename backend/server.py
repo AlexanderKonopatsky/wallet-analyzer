@@ -8,6 +8,10 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env from project root
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 # Fix Windows encoding for Unicode characters in print() from imported modules
 # line_buffering=True ensures logs appear immediately (important for background threads)
@@ -139,8 +143,8 @@ EXCLUDED_WALLETS_FILE = DATA_DIR / "excluded_wallets.json"
 HIDDEN_WALLETS_FILE = DATA_DIR / "hidden_wallets.json"
 
 # Profile generation settings
-PROFILE_MODEL = "google/gemini-3-flash-preview"
-PROFILE_MAX_TOKENS = 8192
+PROFILE_MODEL = os.getenv("PROFILE_MODEL", "google/gemini-3-pro-preview")
+PROFILE_MAX_TOKENS = int(os.getenv("PROFILE_MAX_TOKENS", 15192))
 PROFILE_SYSTEM_PROMPT = """Ты — опытный ончейн-аналитик. Тебе дана подробная хронология активности крипто-кошелька.
 
 Прочитай отчёт целиком и составь глубокий профиль владельца. Не следуй шаблону — каждый кошелёк уникален, и профиль должен отражать именно то, что делает этого владельца особенным. Пиши о том, что действительно бросается в глаза и заслуживает внимания.

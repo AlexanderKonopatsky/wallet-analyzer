@@ -15,7 +15,7 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 
 # ── Configuration ──────────────────────────────────────────────────────────
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-MODEL = "google/gemini-3-flash-preview"  # easy to change
+MODEL = os.getenv("MODEL", "google/gemini-3-flash-preview")
 DUST_THRESHOLD_USD = 1.0
 CHUNK_MAX_TRANSACTIONS = 30
 MAX_CONTEXT_SUMMARIES = None  # None = все "Суть дня", или число для ограничения на больших кошельках
