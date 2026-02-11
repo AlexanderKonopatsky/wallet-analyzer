@@ -128,7 +128,7 @@ function App() {
   const [report, setReport] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
-  const [refreshStatus, setRefreshStatus] = useState(null)
+  const [activeTasks, setActiveTasks] = useState({}) // All active refresh tasks
   const pollIntervalRef = useRef(null)
 
   // Profile
@@ -456,16 +456,18 @@ function App() {
         }))
         setWallets(enrichedWallets)
 
-        // If there's an active task and no wallet is selected, auto-select it
-        // Only auto-select if the wallet is still in the user's list
-        const activeWallets = Object.keys(activeTasks).filter(w =>
-          enrichedWallets.some(wallet => wallet.address.toLowerCase() === w.toLowerCase())
-        )
-        if (activeWallets.length > 0 && !selectedWallet) {
-          const activeWallet = activeWallets[0]
-          setSelectedWallet(activeWallet)
-          setRefreshStatus(activeTasks[activeWallet])
-          startMonitoring(activeWallet)
+        // If there's an active task, start monitoring
+        if (Object.keys(activeTasks).length > 0) {
+          setActiveTasks(activeTasks)
+          startMonitoring()
+
+          // Auto-select first active wallet if no wallet is selected
+          const activeWallets = Object.keys(activeTasks).filter(w =>
+            enrichedWallets.some(wallet => wallet.address.toLowerCase() === w.toLowerCase())
+          )
+          if (activeWallets.length > 0 && !selectedWallet) {
+            setSelectedWallet(activeWallets[0])
+          }
         }
       })
       .catch(() => {})
@@ -614,10 +616,8 @@ function App() {
     } catch { /* ignore */ }
   }, [relatedWallet, fetchRelatedWallets])
 
-  // Monitor refresh status (polling)
-  const startMonitoring = useCallback((wallet) => {
-    if (!wallet) return
-
+  // Monitor all active tasks (polling)
+  const startMonitoring = useCallback(() => {
     // Clear any existing poll interval
     if (pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current)
@@ -626,46 +626,37 @@ function App() {
 
     const poll = setInterval(async () => {
       try {
-        const statusRes = await apiCall(`/api/refresh-status/${wallet.toLowerCase()}`)
-        if (!statusRes) {
+        const res = await apiCall('/api/active-tasks')
+        if (!res || !res.ok) {
           clearInterval(poll)
           pollIntervalRef.current = null
-          setRefreshStatus(null)
-          return
-        }
-        const statusData = await statusRes.json()
-
-        // Stop polling if status is 'idle' (task not running anymore)
-        if (statusData.status === 'idle') {
-          clearInterval(poll)
-          pollIntervalRef.current = null
-          setRefreshStatus(null)
+          setActiveTasks({})
           return
         }
 
-        setRefreshStatus(statusData)
+        const tasks = await res.json()
+        setActiveTasks(tasks)
 
-        if (statusData.status === 'done' || statusData.status === 'error') {
+        // Stop polling if no tasks are running
+        if (Object.keys(tasks).length === 0) {
           clearInterval(poll)
           pollIntervalRef.current = null
-          if (statusData.status === 'done') {
-            await loadReport(wallet)
-            await refreshWallets()
+          // Refresh wallet list to update metadata
+          await refreshWallets()
+          // Reload report if selected wallet was being processed
+          if (selectedWallet) {
+            await loadReport(selectedWallet)
           }
-          if (statusData.status === 'error') {
-            setError(statusData.detail)
-          }
-          setTimeout(() => setRefreshStatus(null), 3000)
         }
       } catch {
         clearInterval(poll)
         pollIntervalRef.current = null
-        setRefreshStatus(null)
+        setActiveTasks({})
       }
     }, 2000)
 
     pollIntervalRef.current = poll
-  }, [loadReport, refreshWallets])
+  }, [loadReport, refreshWallets, selectedWallet])
 
   const startRefresh = useCallback(async (wallet) => {
     if (!wallet) return
@@ -677,17 +668,10 @@ function App() {
 
       const data = await res.json()
 
-      if (data.status === 'already_running') {
-        setRefreshStatus({ status: 'analyzing', detail: 'Already running...' })
-      } else {
-        setRefreshStatus({ status: 'fetching', detail: 'Starting...' })
-      }
-
-      // Start monitoring
-      startMonitoring(wallet)
+      // Start monitoring all tasks
+      startMonitoring()
     } catch (err) {
       setError(err.message)
-      setRefreshStatus(null)
     }
   }, [startMonitoring])
 
@@ -705,56 +689,20 @@ function App() {
       const data = await res.json()
 
       if (data.status === 'started') {
-        setRefreshStatus({
-          status: 'fetching',
-          detail: `Updating ${data.started.length} wallets...`
-        })
-
-        // Start polling for all wallets status
-        const pollBulk = setInterval(async () => {
-          try {
-            const activeRes = await apiCall('/api/active-tasks')
-            if (!activeRes) {
-              clearInterval(pollBulk)
-              setRefreshStatus(null)
-              return
-            }
-            const activeTasks = await activeRes.json()
-
-            if (Object.keys(activeTasks).length === 0) {
-              // All done
-              clearInterval(pollBulk)
-              setRefreshStatus({ status: 'done', detail: 'All updates completed' })
-              await refreshWallets()
-              setTimeout(() => setRefreshStatus(null), 3000)
-            } else {
-              // Still running
-              const count = Object.keys(activeTasks).length
-              setRefreshStatus({
-                status: 'analyzing',
-                detail: `Updating ${count} wallets...`
-              })
-            }
-          } catch (err) {
-            clearInterval(pollBulk)
-            setRefreshStatus(null)
-          }
-        }, 3000)
+        // Start monitoring all tasks
+        startMonitoring()
       } else if (data.status === 'no_wallets') {
-        setRefreshStatus({ status: 'error', detail: 'No wallets to update' })
-        setTimeout(() => setRefreshStatus(null), 3000)
+        setError('No wallets to update')
       }
     } catch (err) {
       setError(err.message)
-      setRefreshStatus(null)
     }
-  }, [refreshWallets])
+  }, [startMonitoring])
 
   const handleSelect = useCallback(async (wallet) => {
     setSelectedWallet(wallet)
     setReport(null)
     setError(null)
-    setRefreshStatus(null)
     setActiveView('report')
     setProfile(null)
     setPortfolio(null)
@@ -790,7 +738,7 @@ function App() {
         setLoading(false)
       }
     }
-  }, [startRefresh, processReportData, refreshWallets])
+  }, [startRefresh, processReportData, refreshWallets, loadReport])
 
   const handleLogin = (token, userData) => {
     setAuthToken(token, userData)
@@ -809,8 +757,15 @@ function App() {
     return <LoginPage onLogin={handleLogin} />
   }
 
-  const isRefreshing = refreshStatus &&
-    (refreshStatus.status === 'fetching' || refreshStatus.status === 'analyzing')
+  const isRefreshing = Object.keys(activeTasks).length > 0
+  const hasActiveTasks = Object.keys(activeTasks).length > 0
+
+  // Helper to get wallet label (tag or shortened address)
+  const getWalletLabel = (address) => {
+    const wallet = wallets.find(w => w.address.toLowerCase() === address.toLowerCase())
+    if (wallet?.tag) return wallet.tag
+    return `${address.slice(0, 8)}...${address.slice(-6)}`
+  }
 
   return (
     <div className="app">
@@ -860,28 +815,63 @@ function App() {
               >
                 {isRefreshing ? 'Updating...' : 'Update Data'}
               </button>
-              {refreshStatus && (
-                <span className={`refresh-status status-${refreshStatus.status}`}>
-                  {refreshStatus.status === 'fetching' && (
-                    <>
-                      ● Fetching transactions
-                      {refreshStatus.new_count !== undefined && refreshStatus.total_count !== undefined && (
-                        <> — {refreshStatus.new_count} new, {refreshStatus.total_count} total</>
+            </div>
+          )}
+
+          {/* Active tasks panel */}
+          {hasActiveTasks && (
+            <div className="active-tasks-panel">
+              <div className="active-tasks-header">
+                Active Tasks ({Object.keys(activeTasks).length})
+              </div>
+              <div className="active-tasks-list">
+                {Object.entries(activeTasks).map(([wallet, task]) => (
+                  <div key={wallet} className="active-task-item">
+                    <div className="active-task-wallet">
+                      {getWalletLabel(wallet)}
+                    </div>
+                    <div className="active-task-status">
+                      {task.status === 'fetching' && (
+                        <div className="task-status-fetching">
+                          <span className="task-spinner">⟳</span>
+                          <span className="task-label">Fetching transactions</span>
+                          {task.new_count !== undefined && task.total_count !== undefined && (
+                            <span className="task-detail">
+                              {task.new_count} new, {task.total_count} total
+                            </span>
+                          )}
+                        </div>
                       )}
-                    </>
-                  )}
-                  {refreshStatus.status === 'analyzing' && (
-                    <>
-                      ● AI analysis
-                      {refreshStatus.percent !== undefined && (
-                        <> — {refreshStatus.percent}%</>
+                      {task.status === 'analyzing' && (
+                        <div className="task-status-analyzing">
+                          <span className="task-spinner">⟳</span>
+                          <span className="task-label">AI analysis</span>
+                          {task.percent !== undefined && (
+                            <div className="task-progress">
+                              <div className="task-progress-bar">
+                                <div
+                                  className="task-progress-fill"
+                                  style={{ width: `${task.percent}%` }}
+                                ></div>
+                              </div>
+                              <span className="task-percent">{task.percent}%</span>
+                            </div>
+                          )}
+                        </div>
                       )}
-                    </>
-                  )}
-                  {refreshStatus.status === 'done' && '✓ Done!'}
-                  {refreshStatus.status === 'error' && '✗ Error'}
-                </span>
-              )}
+                      {task.status === 'classifying' && (
+                        <div className="task-status-classifying">
+                          <span className="task-spinner">⟳</span>
+                          <span className="task-label">Classifying wallets</span>
+                          {task.progress && (
+                            <span className="task-detail">{task.progress}</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
