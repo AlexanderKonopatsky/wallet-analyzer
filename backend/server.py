@@ -177,14 +177,37 @@ def save_wallet_tags(user_id: int, tags: dict) -> None:
         json.dump(tags, f, indent=2, ensure_ascii=False)
 
 
-def load_refresh_status(user_id: int) -> dict:
-    """Load refresh task statuses from user's file."""
+def load_refresh_status(user_id: int, cleanup: bool = False, db: Database = None) -> dict:
+    """Load refresh task statuses from user's file.
+
+    Args:
+        user_id: User ID
+        cleanup: If True, remove statuses for wallets user no longer owns
+        db: Database instance (required if cleanup=True)
+    """
     user_dir = get_user_data_dir(user_id)
     status_file = user_dir / "refresh_status.json"
     if status_file.exists():
         try:
             with open(status_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+                statuses = json.load(f)
+
+            # Cleanup orphaned statuses if requested
+            if cleanup and db:
+                cleaned = {}
+                for wallet, status in statuses.items():
+                    # Keep if user owns wallet or if it's a classify task key
+                    if wallet.startswith("classify_") or check_wallet_ownership(db, user_id, wallet):
+                        cleaned[wallet] = status
+                    else:
+                        print(f"[Cleanup] Removing orphaned status for {wallet} (user {user_id})")
+
+                # Save if anything was removed
+                if len(cleaned) < len(statuses):
+                    save_refresh_status(user_id, cleaned)
+                return cleaned
+
+            return statuses
         except Exception:
             return {}
     return {}
@@ -771,6 +794,12 @@ def hide_wallet(
     hidden = load_hidden_wallets(current_user.id)
     hidden.add(wallet_lower)
     save_hidden_wallets(current_user.id, hidden)
+
+    # Clear refresh status for this wallet to stop any polling
+    user_refresh_tasks = load_refresh_status(current_user.id)
+    if wallet_lower in user_refresh_tasks:
+        user_refresh_tasks.pop(wallet_lower)
+        save_refresh_status(current_user.id, user_refresh_tasks)
 
     return {"wallet": wallet_lower, "status": "hidden"}
 
@@ -1536,9 +1565,10 @@ def get_classify_status(
 
 
 @app.get("/api/active-tasks")
-def get_active_tasks(current_user: User = Depends(get_current_user)):
-    """Get active refresh tasks for current user."""
-    user_refresh_tasks = load_refresh_status(current_user.id)
+def get_active_tasks(current_user: User = Depends(get_current_user), db: Database = Depends(get_db)):
+    """Get active refresh tasks for current user (only for wallets user still owns)."""
+    # Load with cleanup to remove statuses for deleted wallets
+    user_refresh_tasks = load_refresh_status(current_user.id, cleanup=True, db=db)
     active = {
         wallet: status
         for wallet, status in user_refresh_tasks.items()

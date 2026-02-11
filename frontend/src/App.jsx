@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import './App.css'
 import WalletSidebar from './components/WalletSidebar'
 import ReportView, { TxRow } from './components/ReportView'
@@ -129,7 +129,7 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [refreshStatus, setRefreshStatus] = useState(null)
-  const [pollInterval, setPollInterval] = useState(null)
+  const pollIntervalRef = useRef(null)
 
   // Profile
   const [activeView, setActiveView] = useState('report') // 'report' | 'profile' | 'portfolio'
@@ -421,11 +421,12 @@ function App() {
   // Cleanup poll interval on unmount
   useEffect(() => {
     return () => {
-      if (pollInterval) {
-        clearInterval(pollInterval)
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current)
+        pollIntervalRef.current = null
       }
     }
-  }, [pollInterval])
+  }, [])
 
   // Fetch list of tracked wallets and check for active refresh tasks
   useEffect(() => {
@@ -456,7 +457,10 @@ function App() {
         setWallets(enrichedWallets)
 
         // If there's an active task and no wallet is selected, auto-select it
-        const activeWallets = Object.keys(activeTasks)
+        // Only auto-select if the wallet is still in the user's list
+        const activeWallets = Object.keys(activeTasks).filter(w =>
+          enrichedWallets.some(wallet => wallet.address.toLowerCase() === w.toLowerCase())
+        )
         if (activeWallets.length > 0 && !selectedWallet) {
           const activeWallet = activeWallets[0]
           setSelectedWallet(activeWallet)
@@ -615,8 +619,9 @@ function App() {
     if (!wallet) return
 
     // Clear any existing poll interval
-    if (pollInterval) {
-      clearInterval(pollInterval)
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current)
+      pollIntervalRef.current = null
     }
 
     const poll = setInterval(async () => {
@@ -624,16 +629,25 @@ function App() {
         const statusRes = await apiCall(`/api/refresh-status/${wallet.toLowerCase()}`)
         if (!statusRes) {
           clearInterval(poll)
-          setPollInterval(null)
+          pollIntervalRef.current = null
           setRefreshStatus(null)
           return
         }
         const statusData = await statusRes.json()
+
+        // Stop polling if status is 'idle' (task not running anymore)
+        if (statusData.status === 'idle') {
+          clearInterval(poll)
+          pollIntervalRef.current = null
+          setRefreshStatus(null)
+          return
+        }
+
         setRefreshStatus(statusData)
 
         if (statusData.status === 'done' || statusData.status === 'error') {
           clearInterval(poll)
-          setPollInterval(null)
+          pollIntervalRef.current = null
           if (statusData.status === 'done') {
             await loadReport(wallet)
             await refreshWallets()
@@ -645,13 +659,13 @@ function App() {
         }
       } catch {
         clearInterval(poll)
-        setPollInterval(null)
+        pollIntervalRef.current = null
         setRefreshStatus(null)
       }
     }, 2000)
 
-    setPollInterval(poll)
-  }, [loadReport, refreshWallets, pollInterval])
+    pollIntervalRef.current = poll
+  }, [loadReport, refreshWallets])
 
   const startRefresh = useCallback(async (wallet) => {
     if (!wallet) return
