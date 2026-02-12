@@ -300,6 +300,52 @@ def save_hidden_wallets(user_id: int, hidden: set) -> None:
         json.dump({"hidden": list(hidden)}, f, indent=2, ensure_ascii=False)
 
 
+def load_analysis_consents(user_id: int) -> set:
+    """Load wallets with explicit user consent for paid analysis."""
+    user_dir = get_user_data_dir(user_id)
+    consent_file = user_dir / "analysis_consents.json"
+
+    if consent_file.exists():
+        try:
+            with open(consent_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return {w.lower() for w in data.get("wallets", [])}
+        except Exception:
+            return set()
+
+    # Backward compatibility: infer consent from completed/in-progress historical analysis statuses.
+    statuses = load_refresh_status(user_id)
+    inferred = {
+        wallet.lower()
+        for wallet, status in statuses.items()
+        if not wallet.startswith("classify_")
+        and isinstance(status, dict)
+        and status.get("status") in ("done", "analyzing", "error")
+    }
+    if inferred:
+        save_analysis_consents(user_id, inferred)
+    return inferred
+
+
+def save_analysis_consents(user_id: int, consents: set) -> None:
+    """Persist wallets with explicit user consent for paid analysis."""
+    user_dir = get_user_data_dir(user_id)
+    consent_file = user_dir / "analysis_consents.json"
+    normalized = sorted({w.lower() for w in consents if w})
+    with open(consent_file, "w", encoding="utf-8") as f:
+        json.dump({"wallets": normalized}, f, indent=2, ensure_ascii=False)
+
+
+def grant_analysis_consent(user_id: int, wallet: str) -> None:
+    """Mark wallet as consented for future bulk/auto analysis."""
+    wallet_lower = wallet.lower()
+    consents = load_analysis_consents(user_id)
+    if wallet_lower in consents:
+        return
+    consents.add(wallet_lower)
+    save_analysis_consents(user_id, consents)
+
+
 def load_user_balance(user_id: int) -> dict:
     """Load user balance and transaction history."""
     user_dir = get_user_data_dir(user_id)
@@ -2155,12 +2201,31 @@ def auto_refresh_all_wallets() -> None:
 
         for user in all_users:
             user_id = user.id
-            wallets = user.wallet_addresses
+            all_wallets = user.wallet_addresses
 
-            if not wallets:
+            if not all_wallets:
                 continue
 
-            print(f"[Auto-Refresh] Processing {len(wallets)} wallets for user {user_id}")
+            hidden_wallets = load_hidden_wallets(user_id)
+            consented_wallets = load_analysis_consents(user_id)
+            wallets = [
+                wallet for wallet in all_wallets
+                if wallet.lower() not in hidden_wallets and wallet.lower() in consented_wallets
+            ]
+
+            if not wallets:
+                print(f"[Auto-Refresh] Skipping user {user_id}: no visible consented wallets")
+                continue
+
+            skipped_hidden_count = sum(1 for wallet in all_wallets if wallet.lower() in hidden_wallets)
+            skipped_no_consent_count = sum(
+                1 for wallet in all_wallets
+                if wallet.lower() not in hidden_wallets and wallet.lower() not in consented_wallets
+            )
+            print(
+                f"[Auto-Refresh] Processing {len(wallets)} wallets for user {user_id} "
+                f"(hidden: {skipped_hidden_count}, no consent: {skipped_no_consent_count})"
+            )
 
             # Load user's refresh status
             user_refresh_tasks = load_refresh_status(user_id)
@@ -2584,6 +2649,9 @@ def start_analysis(
     if not check_wallet_ownership(db, current_user.id, wallet_lower):
         raise HTTPException(status_code=403, detail="Wallet not found in your list")
 
+    # Explicit consent is granted when user manually starts analysis.
+    grant_analysis_consent(current_user.id, wallet_lower)
+
     # Load user's refresh status
     user_refresh_tasks = load_refresh_status(current_user.id)
 
@@ -2622,29 +2690,47 @@ async def start_bulk_refresh(
     body = await request.json()
     category_id = body.get("category_id")  # None for all, string for specific category
 
-    # Get list of user's wallets to refresh
+    # Get candidate wallets for this request
     if category_id == "all" or category_id is None:
-        # Get all user's wallets
         wallets = current_user.wallet_addresses
     else:
-        # Get wallets in specific category
         wallets = get_wallets_by_category(current_user.id, category_id)
 
     if not wallets:
         return {"status": "no_wallets", "started": []}
 
+    hidden_wallets = load_hidden_wallets(current_user.id)
+    consented_wallets = load_analysis_consents(current_user.id)
+
     # Start refresh for each wallet (if not already running)
     started = []
     already_running = []
     skipped_unauthorized = []  # Track wallets user doesn't actually own
+    skipped_hidden = []
+    skipped_no_consent = []
     user_refresh_tasks = load_refresh_status(current_user.id)
+    seen_wallets = set()
 
     for wallet in wallets:
         wallet_lower = wallet.lower()
 
+        if wallet_lower in seen_wallets:
+            continue
+        seen_wallets.add(wallet_lower)
+
+        # Never refresh hidden wallets (not present in UI list).
+        if wallet_lower in hidden_wallets:
+            skipped_hidden.append(wallet_lower)
+            continue
+
         # Security check: verify user actually owns this wallet before refreshing
         if not check_wallet_ownership(db, current_user.id, wallet_lower):
             skipped_unauthorized.append(wallet_lower)
+            continue
+
+        # Only refresh wallets with explicit consent for paid analysis.
+        if wallet_lower not in consented_wallets:
+            skipped_no_consent.append(wallet_lower)
             continue
 
         # Check if thread is already running
@@ -2673,7 +2759,9 @@ async def start_bulk_refresh(
         "started": started,
         "already_running": already_running,
         "skipped_unauthorized": skipped_unauthorized,
-        "total": len(wallets)
+        "skipped_hidden": skipped_hidden,
+        "skipped_no_consent": skipped_no_consent,
+        "total": len(seen_wallets)
     }
 
 

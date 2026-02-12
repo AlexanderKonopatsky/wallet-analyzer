@@ -139,6 +139,7 @@ function App() {
   })
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const pollIntervalRef = useRef(null)
+  const activeTasksRef = useRef({})
 
   // Profile
   const [activeView, setActiveView] = useState('report') // 'report' | 'profile' | 'portfolio' | 'payment'
@@ -230,6 +231,10 @@ function App() {
       console.error('Failed to save classification cache:', err)
     }
   }, [classResults])
+
+  useEffect(() => {
+    activeTasksRef.current = activeTasks
+  }, [activeTasks])
 
   // Load settings on mount (only if authenticated)
   useEffect(() => {
@@ -801,10 +806,19 @@ function App() {
         }
 
         const tasks = await res.json()
-        setActiveTasks(tasks)
+
+        // Preserve local cost_estimate rows that are not returned by /api/active-tasks.
+        const mergedTasks = { ...tasks }
+        for (const [wallet, status] of Object.entries(activeTasksRef.current || {})) {
+          if (status?.status === 'cost_estimate' && !mergedTasks[wallet]) {
+            mergedTasks[wallet] = status
+          }
+        }
+
+        setActiveTasks(mergedTasks)
 
         // Stop polling if no tasks are running
-        if (Object.keys(tasks).length === 0) {
+        if (Object.keys(mergedTasks).length === 0) {
           clearInterval(poll)
           pollIntervalRef.current = null
           // Refresh wallet list to update metadata
@@ -949,8 +963,26 @@ function App() {
       const data = await res.json()
 
       if (data.status === 'started') {
-        // Start monitoring all tasks
-        startMonitoring()
+        const startedCount = Array.isArray(data.started) ? data.started.length : 0
+        const runningCount = Array.isArray(data.already_running) ? data.already_running.length : 0
+        const skippedHidden = Array.isArray(data.skipped_hidden) ? data.skipped_hidden.length : 0
+        const skippedNoConsent = Array.isArray(data.skipped_no_consent) ? data.skipped_no_consent.length : 0
+
+        // Start monitoring when something is running or has just been started.
+        if (startedCount > 0 || runningCount > 0) {
+          startMonitoring()
+        }
+
+        // Show an explicit reason when nothing was started.
+        if (startedCount === 0 && runningCount === 0) {
+          if (skippedNoConsent > 0 || skippedHidden > 0) {
+            setError(
+              `No eligible wallets to update (no consent: ${skippedNoConsent}, hidden: ${skippedHidden})`
+            )
+          } else {
+            setError('No wallets to update')
+          }
+        }
       } else if (data.status === 'no_wallets') {
         setError('No wallets to update')
       }
