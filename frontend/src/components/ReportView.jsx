@@ -5,10 +5,9 @@ import './ReportView.css'
 import { apiCall } from '../utils/api'
 
 function parseReport(markdown) {
-  if (!markdown) return { summary: '', sections: [] }
+  if (!markdown) return { sections: [] }
 
   const lines = markdown.split('\n')
-  let summary = ''
   const sections = []
   let currentSection = null
   let pastTitle = false
@@ -28,8 +27,6 @@ function parseReport(markdown) {
 
     if (currentSection) {
       currentSection.content += line + '\n'
-    } else if (pastTitle) {
-      summary += line + '\n'
     }
   }
 
@@ -45,7 +42,7 @@ function parseReport(markdown) {
   })
   sections.sort((a, b) => b._sortDate.localeCompare(a._sortDate))
 
-  return { summary: summary.trim(), sections }
+  return { sections }
 }
 
 const TX_PAGE_SIZE = 50
@@ -242,7 +239,7 @@ const DayCard = memo(function DayCard({ id, date, content, walletAddress, isNew,
 })
 
 function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount, updatedSectionIndices = new Set() }) {
-  const { summary, sections } = useMemo(
+  const { sections } = useMemo(
     () => parseReport(report?.markdown),
     [report?.markdown]
   )
@@ -321,12 +318,6 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
           {report.tx_count} transactions
         </span>
       </div>
-
-      {summary && (
-        <div className="report-summary">
-          <ReactMarkdown>{summary}</ReactMarkdown>
-        </div>
-      )}
 
       {sections.length > 0 && <CalendarStrip sections={sections} activeDates={txCountDates} />}
 

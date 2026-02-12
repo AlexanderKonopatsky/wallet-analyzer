@@ -1208,11 +1208,11 @@ function App() {
           )}
 
           {/* Active tasks panel */}
-          <div className="active-tasks-panel">
-            <div className="active-tasks-header">
-              {hasActiveTasks ? `Active Tasks (${taskEntries.length})` : 'Active Tasks'}
-            </div>
-            {hasActiveTasks ? (
+          {hasActiveTasks && (
+            <div className="active-tasks-panel">
+              <div className="active-tasks-header">
+                {`Active Tasks (${taskEntries.length})`}
+              </div>
               <div className="active-tasks-list">
                 {taskEntries.map(([wallet, task]) => (
                   <div key={wallet} className="active-task-item">
@@ -1298,10 +1298,8 @@ function App() {
                   </div>
                 ))}
               </div>
-            ) : (
-              <div className="active-tasks-empty">No active tasks</div>
-            )}
-          </div>
+            </div>
+          )}
 
           {error && <div className="error-banner">{error}</div>}
 
