@@ -1586,19 +1586,79 @@ def get_transactions(
     return result
 
 
-@app.post("/api/refresh/{wallet}")
-def start_refresh(
+@app.post("/api/estimate-cost/{wallet}")
+def estimate_cost(
     wallet: str,
     current_user: User = Depends(get_current_user),
     db: Database = Depends(get_db)
 ):
-    """Start background fetch + analyze for a wallet (auto-adds to user's list if new)."""
+    """Fetch transactions (if needed) and return cost estimate for AI analysis.
+
+    This endpoint is called before analysis to show user the cost.
+    Returns: tx_count, cost_usd, is_cached (whether transactions already exist)
+    """
     wallet_lower = wallet.lower()
 
     # Check ownership or add if new wallet
     if not check_wallet_ownership(db, current_user.id, wallet_lower):
         # New wallet - add to user's list
         add_user_wallet(db, current_user.id, wallet_lower)
+
+    try:
+        # Check if transactions already exist
+        data_file = DATA_DIR / f"{wallet_lower}.json"
+        is_cached = data_file.exists()
+
+        # Fetch transactions if not cached
+        if not is_cached:
+            print(f"[Cost Estimate] Fetching transactions for new wallet: {wallet_lower}")
+            existing_data = load_existing_data(wallet)
+            existing_txs = {tx["tx_hash"]: tx for tx in existing_data["transactions"]}
+
+            all_transactions = fetch_all_transactions(wallet, existing_txs)
+            if all_transactions:
+                all_transactions.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
+                save_data(wallet, all_transactions)
+
+            # Reload data file after saving
+            existing_data = load_existing_data(wallet)
+            tx_count = len(existing_data["transactions"])
+        else:
+            # Load existing transaction count
+            print(f"[Cost Estimate] Using cached transactions for: {wallet_lower}")
+            existing_data = load_existing_data(wallet)
+            tx_count = len(existing_data["transactions"])
+
+        # Calculate cost
+        cost_per_1000 = float(os.getenv("COST_PER_1000_TX", "0.20"))
+        cost_multiplier = float(os.getenv("COST_MULTIPLIER", "1.0"))
+        base_cost = (tx_count / 1000) * cost_per_1000
+        final_cost = base_cost * cost_multiplier
+
+        return {
+            "wallet": wallet_lower,
+            "tx_count": tx_count,
+            "cost_usd": round(final_cost, 2),
+            "is_cached": is_cached
+        }
+
+    except Exception as e:
+        print(f"[Cost Estimate] Error for {wallet_lower}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/start-analysis/{wallet}")
+def start_analysis(
+    wallet: str,
+    current_user: User = Depends(get_current_user),
+    db: Database = Depends(get_db)
+):
+    """Start AI analysis for a wallet (transactions must be fetched first via /estimate-cost)."""
+    wallet_lower = wallet.lower()
+
+    # Check ownership
+    if not check_wallet_ownership(db, current_user.id, wallet_lower):
+        raise HTTPException(status_code=403, detail="Wallet not found in your list")
 
     # Load user's refresh status
     user_refresh_tasks = load_refresh_status(current_user.id)

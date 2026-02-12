@@ -138,7 +138,8 @@
 
 .task-status-fetching,
 .task-status-analyzing,
-.task-status-classifying {
+.task-status-classifying,
+.task-status-cost-estimate {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -197,6 +198,79 @@
   color: #a371f7;
   min-width: 36px;
   text-align: right;
+}
+
+/* Cost estimate styles */
+.cost-estimate-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+
+.cost-estimate-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.825rem;
+}
+
+.cost-estimate-label {
+  color: #8b949e;
+  font-weight: 500;
+  min-width: 90px;
+}
+
+.cost-estimate-value {
+  color: #e6edf3;
+  font-weight: 500;
+}
+
+.cost-estimate-price {
+  color: #58a6ff;
+  font-weight: 600;
+}
+
+.cost-estimate-note {
+  font-size: 0.75rem;
+  color: #8b949e;
+  font-style: italic;
+}
+
+.cost-estimate-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.btn-cost-start,
+.btn-cost-cancel {
+  padding: 6px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-cost-start {
+  background: #238636;
+  color: #fff;
+}
+
+.btn-cost-start:hover {
+  background: #2ea043;
+}
+
+.btn-cost-cancel {
+  background: #21262d;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+}
+
+.btn-cost-cancel:hover {
+  background: #30363d;
 }
 
 /* Shared button styles */

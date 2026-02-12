@@ -658,12 +658,65 @@ function App() {
     pollIntervalRef.current = poll
   }, [loadReport, refreshWallets, selectedWallet])
 
-  const startRefresh = useCallback(async (wallet) => {
+  const estimateCost = useCallback(async (wallet) => {
+    if (!wallet) return null
+    try {
+      const res = await apiCall(`/api/estimate-cost/${wallet}`, { method: 'POST' })
+      if (!res || !res.ok) {
+        const errorData = await res.json().catch(() => ({}))
+        throw new Error(errorData.detail || 'Failed to estimate cost')
+      }
+      const data = await res.json()
+      return data
+    } catch (err) {
+      setError(err.message)
+      return null
+    }
+  }, [])
+
+  const startAnalysis = useCallback(async (wallet) => {
     if (!wallet) return
     setError(null)
 
+    // Remove cost estimate task
+    setActiveTasks(prev => {
+      const newTasks = { ...prev }
+      delete newTasks[wallet.toLowerCase()]
+      return newTasks
+    })
+
     try {
-      const res = await apiCall(`/api/refresh/${wallet}`, { method: 'POST' })
+      const res = await apiCall(`/api/start-analysis/${wallet}`, { method: 'POST' })
+      if (!res) return
+
+      const data = await res.json()
+
+      // Start monitoring all tasks
+      startMonitoring()
+    } catch (err) {
+      setError(err.message)
+    }
+  }, [startMonitoring])
+
+  const cancelAnalysis = useCallback((wallet) => {
+    // Remove cost estimate task and deselect wallet
+    setActiveTasks(prev => {
+      const newTasks = { ...prev }
+      delete newTasks[wallet.toLowerCase()]
+      return newTasks
+    })
+    setSelectedWallet('')
+  }, [])
+
+  const startRefresh = useCallback(async (wallet) => {
+    if (!wallet) return
+
+    // For refresh (wallet already exists), just start analysis directly
+    // Cost was already shown when wallet was first added
+    setError(null)
+
+    try {
+      const res = await apiCall(`/api/start-analysis/${wallet}`, { method: 'POST' })
       if (!res) return
 
       const data = await res.json()
@@ -718,10 +771,21 @@ function App() {
           return
         }
         if (res.status === 404) {
-          // No report exists - this is a new wallet, start refresh automatically
+          // No report exists - this is a new wallet, estimate cost first
           setLoading(false)
-          setError('Starting fetch and analysis...')
-          await startRefresh(wallet)
+          const estimate = await estimateCost(wallet)
+          if (estimate) {
+            // Add cost estimate task to active tasks
+            setActiveTasks(prev => ({
+              ...prev,
+              [wallet.toLowerCase()]: {
+                status: 'cost_estimate',
+                tx_count: estimate.tx_count,
+                cost_usd: estimate.cost_usd,
+                is_cached: estimate.is_cached
+              }
+            }))
+          }
         } else if (!res.ok) {
           throw new Error('Failed to load report')
         } else {
@@ -738,7 +802,7 @@ function App() {
         setLoading(false)
       }
     }
-  }, [startRefresh, processReportData, refreshWallets, loadReport])
+  }, [estimateCost, processReportData, refreshWallets])
 
   const handleLogin = (token, userData) => {
     setAuthToken(token, userData)
@@ -831,6 +895,37 @@ function App() {
                       {getWalletLabel(wallet)}
                     </div>
                     <div className="active-task-status">
+                      {task.status === 'cost_estimate' && (
+                        <div className="task-status-cost-estimate">
+                          <div className="cost-estimate-info">
+                            <div className="cost-estimate-row">
+                              <span className="cost-estimate-label">Transactions:</span>
+                              <span className="cost-estimate-value">{task.tx_count.toLocaleString()}</span>
+                            </div>
+                            <div className="cost-estimate-row">
+                              <span className="cost-estimate-label">Cost:</span>
+                              <span className="cost-estimate-value cost-estimate-price">${task.cost_usd.toFixed(2)}</span>
+                            </div>
+                            {task.is_cached && (
+                              <div className="cost-estimate-note">Transactions cached</div>
+                            )}
+                          </div>
+                          <div className="cost-estimate-actions">
+                            <button
+                              className="btn-cost-start"
+                              onClick={() => startAnalysis(wallet)}
+                            >
+                              Start
+                            </button>
+                            <button
+                              className="btn-cost-cancel"
+                              onClick={() => cancelAnalysis(wallet)}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
                       {task.status === 'fetching' && (
                         <div className="task-status-fetching">
                           <span className="task-spinner">⟳</span>
