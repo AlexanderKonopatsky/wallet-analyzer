@@ -1586,36 +1586,47 @@ def get_transactions(
     return result
 
 
-@app.post("/api/estimate-cost/{wallet}")
-def estimate_cost(
-    wallet: str,
-    current_user: User = Depends(get_current_user),
-    db: Database = Depends(get_db)
-):
-    """Fetch transactions (if needed) and return cost estimate for AI analysis.
-
-    This endpoint is called before analysis to show user the cost.
-    Returns: tx_count, cost_usd, is_cached (whether transactions already exist)
-    """
+def background_estimate_cost(wallet: str, user_id: int) -> None:
+    """Background task: fetch transactions and calculate cost estimate."""
     wallet_lower = wallet.lower()
-
-    # Check ownership or add if new wallet
-    if not check_wallet_ownership(db, current_user.id, wallet_lower):
-        # New wallet - add to user's list
-        add_user_wallet(db, current_user.id, wallet_lower)
-
     try:
+        print(f"[Cost Estimate] Starting for {wallet_lower} (user {user_id})", flush=True)
+
         # Check if transactions already exist
         data_file = DATA_DIR / f"{wallet_lower}.json"
         is_cached = data_file.exists()
 
-        # Fetch transactions if not cached
+        user_refresh_tasks = load_refresh_status(user_id)
+
         if not is_cached:
+            # Fetch transactions with progress updates
             print(f"[Cost Estimate] Fetching transactions for new wallet: {wallet_lower}")
+            user_refresh_tasks[wallet_lower] = {
+                "status": "fetching",
+                "detail": "Fetching transactions...",
+                "new_count": 0,
+                "total_count": 0
+            }
+            save_refresh_status(user_id, user_refresh_tasks)
+            refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
+
             existing_data = load_existing_data(wallet)
             existing_txs = {tx["tx_hash"]: tx for tx in existing_data["transactions"]}
+            initial_count = len(existing_txs)
 
-            all_transactions = fetch_all_transactions(wallet, existing_txs)
+            # Progress callback to update status
+            def fetch_progress(new_count, total_count):
+                user_refresh_tasks = load_refresh_status(user_id)
+                user_refresh_tasks[wallet_lower] = {
+                    "status": "fetching",
+                    "detail": f"Received {new_count} new transactions",
+                    "new_count": new_count,
+                    "total_count": total_count
+                }
+                save_refresh_status(user_id, user_refresh_tasks)
+                refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
+
+            all_transactions = fetch_all_transactions(wallet, existing_txs, progress_callback=fetch_progress)
             if all_transactions:
                 all_transactions.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
                 save_data(wallet, all_transactions)
@@ -1635,16 +1646,63 @@ def estimate_cost(
         base_cost = (tx_count / 1000) * cost_per_1000
         final_cost = base_cost * cost_multiplier
 
-        return {
-            "wallet": wallet_lower,
+        # Update status with cost estimate
+        user_refresh_tasks = load_refresh_status(user_id)
+        user_refresh_tasks[wallet_lower] = {
+            "status": "cost_estimate",
             "tx_count": tx_count,
             "cost_usd": round(final_cost, 2),
             "is_cached": is_cached
         }
+        save_refresh_status(user_id, user_refresh_tasks)
+        refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
+
+        print(f"[Cost Estimate] Done for {wallet_lower}: {tx_count} txs, ${final_cost:.2f}", flush=True)
 
     except Exception as e:
-        print(f"[Cost Estimate] Error for {wallet_lower}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[Cost Estimate] Error for {wallet_lower}: {e}", flush=True)
+        user_refresh_tasks = load_refresh_status(user_id)
+        user_refresh_tasks[wallet_lower] = {"status": "error", "detail": str(e)}
+        save_refresh_status(user_id, user_refresh_tasks)
+        refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
+    finally:
+        # Clean up thread reference
+        active_threads.pop(wallet_lower, None)
+
+
+@app.post("/api/estimate-cost/{wallet}")
+def estimate_cost(
+    wallet: str,
+    current_user: User = Depends(get_current_user),
+    db: Database = Depends(get_db)
+):
+    """Start background task to fetch transactions and estimate cost.
+
+    Returns immediately and updates status via /api/refresh-status/{wallet}
+    """
+    wallet_lower = wallet.lower()
+
+    # Check ownership or add if new wallet
+    if not check_wallet_ownership(db, current_user.id, wallet_lower):
+        # New wallet - add to user's list
+        add_user_wallet(db, current_user.id, wallet_lower)
+
+    # Check if already running
+    existing_thread = active_threads.get(wallet_lower)
+    if existing_thread and existing_thread.is_alive():
+        return {"status": "already_running"}
+
+    # Start background task
+    user_refresh_tasks = load_refresh_status(current_user.id)
+    user_refresh_tasks[wallet_lower] = {"status": "fetching", "detail": "Starting..."}
+    save_refresh_status(current_user.id, user_refresh_tasks)
+    refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
+
+    thread = threading.Thread(target=background_estimate_cost, args=(wallet, current_user.id), daemon=False)
+    thread.start()
+    active_threads[wallet_lower] = thread
+
+    return {"status": "started"}
 
 
 @app.post("/api/start-analysis/{wallet}")

@@ -661,13 +661,52 @@ function App() {
   const estimateCost = useCallback(async (wallet) => {
     if (!wallet) return null
     try {
+      // Start background fetching
       const res = await apiCall(`/api/estimate-cost/${wallet}`, { method: 'POST' })
       if (!res || !res.ok) {
         const errorData = await res.json().catch(() => ({}))
         throw new Error(errorData.detail || 'Failed to estimate cost')
       }
-      const data = await res.json()
-      return data
+
+      // Poll for status updates until we get cost_estimate
+      return new Promise((resolve, reject) => {
+        const pollInterval = setInterval(async () => {
+          try {
+            const statusRes = await apiCall(`/api/refresh-status/${wallet}`)
+            if (!statusRes || !statusRes.ok) {
+              clearInterval(pollInterval)
+              reject(new Error('Failed to get status'))
+              return
+            }
+
+            const status = await statusRes.json()
+
+            // Update active tasks with current status
+            setActiveTasks(prev => ({
+              ...prev,
+              [wallet.toLowerCase()]: status
+            }))
+
+            // If we reached cost_estimate, we're done
+            if (status.status === 'cost_estimate') {
+              clearInterval(pollInterval)
+              resolve(status)
+            } else if (status.status === 'error') {
+              clearInterval(pollInterval)
+              reject(new Error(status.detail || 'Failed to estimate cost'))
+            }
+          } catch (err) {
+            clearInterval(pollInterval)
+            reject(err)
+          }
+        }, 500) // Poll every 500ms
+
+        // Timeout after 60 seconds
+        setTimeout(() => {
+          clearInterval(pollInterval)
+          reject(new Error('Cost estimation timed out'))
+        }, 60000)
+      })
     } catch (err) {
       setError(err.message)
       return null
@@ -771,21 +810,21 @@ function App() {
           return
         }
         if (res.status === 404) {
-          // No report exists - this is a new wallet, estimate cost first
+          // No report exists - this is a new wallet, estimate cost with real-time progress
           setLoading(false)
+
+          // Start cost estimation (this will poll for updates)
           const estimate = await estimateCost(wallet)
-          if (estimate) {
-            // Add cost estimate task to active tasks
-            setActiveTasks(prev => ({
-              ...prev,
-              [wallet.toLowerCase()]: {
-                status: 'cost_estimate',
-                tx_count: estimate.tx_count,
-                cost_usd: estimate.cost_usd,
-                is_cached: estimate.is_cached
-              }
-            }))
+
+          if (!estimate) {
+            // Remove task on error
+            setActiveTasks(prev => {
+              const newTasks = { ...prev }
+              delete newTasks[wallet.toLowerCase()]
+              return newTasks
+            })
           }
+          // Note: activeTasks is already updated by estimateCost polling
         } else if (!res.ok) {
           throw new Error('Failed to load report')
         } else {
