@@ -3,37 +3,58 @@ import './CalendarStrip.css'
 
 const DOW_LABELS = ['M', 'T', 'W', 'T', 'F', 'S', 'S']
 
-function extractDatesFromSection(section) {
+function extractSectionRange(section) {
   const isoMatches = section.date.match(/\d{4}-\d{2}-\d{2}/g) || []
-  if (isoMatches.length === 0) return []
-  if (isoMatches.length === 1) return [isoMatches[0]]
+  if (isoMatches.length === 0) return null
 
-  // Date range: expand all days between first and last
-  const start = new Date(isoMatches[0] + 'T00:00:00')
-  const end = new Date(isoMatches[isoMatches.length - 1] + 'T00:00:00')
-  const dates = []
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    dates.push(d.toISOString().slice(0, 10))
-  }
-  return dates
+  const start = isoMatches[0]
+  const end = isoMatches[isoMatches.length - 1]
+  return start <= end ? { start, end } : { start: end, end: start }
 }
 
-function CalendarStrip({ sections }) {
+function fallbackRangeDates(range) {
+  if (!range) return []
+  if (range.start === range.end) return [range.start]
+  return [range.start, range.end]
+}
+
+function getSectionDates(section, activeDateSet) {
+  const range = extractSectionRange(section)
+  if (!range) return []
+
+  if (!activeDateSet || activeDateSet.size === 0) {
+    return fallbackRangeDates(range)
+  }
+
+  const dates = []
+  activeDateSet.forEach(dateIso => {
+    if (dateIso >= range.start && dateIso <= range.end) {
+      dates.push(dateIso)
+    }
+  })
+
+  return dates.length > 0 ? dates : fallbackRangeDates(range)
+}
+
+function CalendarStrip({ sections, activeDates }) {
   const stripRef = useRef(null)
   const todayIso = new Date().toISOString().slice(0, 10)
 
   const { monthGrids, gaps } = useMemo(() => {
     if (!sections || sections.length === 0) return { monthGrids: [], gaps: [] }
+    const activeDateSet = Array.isArray(activeDates) ? new Set(activeDates) : null
 
-    // Build dateIso → { targetId, significance } map
+    // Build dateIso -> { targetId, significance } map
     const dateToInfo = new Map()
     sections.forEach(section => {
-      const dates = extractDatesFromSection(section)
+      const dates = getSectionDates(section, activeDateSet)
       const targetId = `day-${section._sortDate}`
       const significance = section._significance || 3
-      dates.forEach(d => {
-        if (!dateToInfo.has(d)) {
-          dateToInfo.set(d, { targetId, significance })
+
+      dates.forEach(dateIso => {
+        const existing = dateToInfo.get(dateIso)
+        if (!existing || significance > existing.significance) {
+          dateToInfo.set(dateIso, { targetId, significance })
         }
       })
     })
@@ -90,7 +111,7 @@ function CalendarStrip({ sections }) {
     }
 
     return { monthGrids: grids, gaps: gapIndices }
-  }, [sections, todayIso])
+  }, [sections, activeDates, todayIso])
 
   // Auto-scroll to newest month (rightmost) on load
   useEffect(() => {

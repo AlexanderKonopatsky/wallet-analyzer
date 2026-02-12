@@ -246,6 +246,40 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
     () => parseReport(report?.markdown),
     [report?.markdown]
   )
+  const [txCountDates, setTxCountDates] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    if (!walletAddress) {
+      setTxCountDates(null)
+      return () => {
+        cancelled = true
+      }
+    }
+
+    apiCall(`/api/tx-counts/${encodeURIComponent(walletAddress)}`)
+      .then(res => (res && res.ok ? res.json() : null))
+      .then(data => {
+        if (cancelled) return
+        if (!data || typeof data !== 'object') {
+          setTxCountDates(null)
+          return
+        }
+
+        const dates = Object.entries(data)
+          .filter(([day, count]) => /^\d{4}-\d{2}-\d{2}$/.test(day) && Number(count) > 0)
+          .map(([day]) => day)
+        setTxCountDates(dates)
+      })
+      .catch(() => {
+        if (!cancelled) setTxCountDates(null)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [walletAddress])
 
   if (loading) {
     return (
@@ -294,7 +328,7 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
         </div>
       )}
 
-      {sections.length > 0 && <CalendarStrip sections={sections} />}
+      {sections.length > 0 && <CalendarStrip sections={sections} activeDates={txCountDates} />}
 
       <div className="report-sections">
         {sections.map((section, i) => (
