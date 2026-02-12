@@ -332,6 +332,30 @@
   color: #484f58;
 }
 
+.category-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.category-manage-btn {
+  padding: 4px 8px;
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  color: #8b949e;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.15s;
+  opacity: 0.75;
+}
+
+.category-manage-btn:hover {
+  background: #30363d;
+  color: #e6edf3;
+  opacity: 1;
+}
+
 .category-refresh-btn {
   padding: 4px 8px;
   background: #21262d;

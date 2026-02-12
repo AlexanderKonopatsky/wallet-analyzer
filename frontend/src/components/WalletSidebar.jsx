@@ -104,7 +104,7 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
           console.error('Failed to create category:', error)
         }
       } else {
-        const res = await fetch(`/api/categories/${editingCategory.id}`, {
+        const res = await apiCall(`/api/categories/${editingCategory.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -113,9 +113,12 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
           })
         })
         console.log('Update category response:', res.status)
-        if (res.ok) {
+        if (res?.ok) {
           await fetchCategories()
           onRefresh?.()
+        } else {
+          const error = res ? await res.text() : 'Unauthorized'
+          console.error('Failed to update category:', error)
         }
       }
       setShowCategoryModal(false)
@@ -128,10 +131,13 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
     if (!confirm('Delete category? Wallets will become uncategorized.')) return
 
     try {
-      const res = await fetch(`/api/categories/${categoryId}`, { method: 'DELETE' })
-      if (res.ok) {
+      const res = await apiCall(`/api/categories/${categoryId}`, { method: 'DELETE' })
+      if (res?.ok) {
         await fetchCategories()
         onRefresh?.()
+      } else {
+        const error = res ? await res.text() : 'Unauthorized'
+        console.error('Failed to delete category:', error)
       }
     } catch (err) {
       console.error('Failed to delete category:', err)
@@ -207,15 +213,26 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
   }
 
   // Context menu handlers
-  const handleContextMenu = (e, type, item) => {
-    e.preventDefault()
-    e.stopPropagation()
+  const openContextMenu = (x, y, type, item) => {
     setContextMenu({
-      x: e.clientX,
-      y: e.clientY,
+      x,
+      y,
       type,
       item
     })
+  }
+
+  const handleContextMenu = (e, type, item) => {
+    e.preventDefault()
+    e.stopPropagation()
+    openContextMenu(e.clientX, e.clientY, type, item)
+  }
+
+  const handleCategoryActionsClick = (e, category) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const rect = e.currentTarget.getBoundingClientRect()
+    openContextMenu(rect.left, rect.bottom + 6, 'category', category)
   }
 
   useEffect(() => {
@@ -400,16 +417,25 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
                   <span className="category-name">{cat.name}</span>
                   <span className="category-count">({categoryWallets.length})</span>
                 </div>
-                <button
-                  className="category-refresh-btn"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onBulkRefresh?.(cat.id)
-                  }}
-                  title="Update all wallets in category"
-                >
-                  🔄
-                </button>
+                <div className="category-header-actions">
+                  <button
+                    className="category-manage-btn"
+                    onClick={(e) => handleCategoryActionsClick(e, cat)}
+                    title="Edit or delete category"
+                  >
+                    Manage
+                  </button>
+                  <button
+                    className="category-refresh-btn"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onBulkRefresh?.(cat.id)
+                    }}
+                    title="Update all wallets in category"
+                  >
+                    🔄
+                  </button>
+                </div>
               </div>
 
               {isExpanded && (
