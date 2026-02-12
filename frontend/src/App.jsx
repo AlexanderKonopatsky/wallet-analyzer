@@ -119,6 +119,8 @@ function RelatedCard({ rw, mainWallet, classificationOverride, classifyingNow })
 }
 
 function App() {
+  const MOBILE_BREAKPOINT = 900
+
   // Auth state
   const [user, setUser] = useState(null)
   const [authChecking, setAuthChecking] = useState(true)
@@ -131,6 +133,11 @@ function App() {
   const [error, setError] = useState(null)
   const [activeTasks, setActiveTasks] = useState({}) // All active refresh tasks
   const [balance, setBalance] = useState(0)
+  const [isMobileLayout, setIsMobileLayout] = useState(() => {
+    if (typeof window === 'undefined') return false
+    return window.innerWidth <= MOBILE_BREAKPOINT
+  })
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const pollIntervalRef = useRef(null)
 
   // Profile
@@ -650,6 +657,43 @@ function App() {
     }
   }, [])
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    const updateLayoutMode = () => {
+      setIsMobileLayout(window.innerWidth <= MOBILE_BREAKPOINT)
+    }
+
+    updateLayoutMode()
+    window.addEventListener('resize', updateLayoutMode)
+    return () => window.removeEventListener('resize', updateLayoutMode)
+  }, [MOBILE_BREAKPOINT])
+
+  useEffect(() => {
+    if (!isMobileLayout) {
+      setMobileSidebarOpen(false)
+    }
+  }, [isMobileLayout])
+
+  useEffect(() => {
+    if (!mobileSidebarOpen) return
+
+    const prevOverflow = document.body.style.overflow
+    const handleEscape = (e) => {
+      if (e.key === 'Escape') {
+        setMobileSidebarOpen(false)
+      }
+    }
+
+    document.body.style.overflow = 'hidden'
+    document.addEventListener('keydown', handleEscape)
+
+    return () => {
+      document.body.style.overflow = prevOverflow
+      document.removeEventListener('keydown', handleEscape)
+    }
+  }, [mobileSidebarOpen])
+
   // Monitor all active tasks (polling)
   const startMonitoring = useCallback(() => {
     // Clear any existing poll interval
@@ -829,6 +873,9 @@ function App() {
 
   const handleSelect = useCallback(async (wallet) => {
     setSelectedWallet(wallet)
+    if (isMobileLayout) {
+      setMobileSidebarOpen(false)
+    }
     setReport(null)
     setError(null)
     setActiveView('report')
@@ -877,7 +924,7 @@ function App() {
         setLoading(false)
       }
     }
-  }, [estimateCost, processReportData, refreshWallets])
+  }, [estimateCost, isMobileLayout, processReportData, refreshWallets])
 
   const handleLogin = (token, userData) => {
     setAuthToken(token, userData)
@@ -906,8 +953,40 @@ function App() {
     return `${address.slice(0, 8)}...${address.slice(-6)}`
   }
 
+  const walletSidebar = (
+    <WalletSidebar
+      wallets={wallets}
+      selectedWallet={selectedWallet}
+      onSelect={handleSelect}
+      onSaveTag={saveTag}
+      onRefresh={refreshWallets}
+      onBulkRefresh={startBulkRefresh}
+      onAction={async (wallet, actionId) => {
+        if (isMobileLayout) {
+          setMobileSidebarOpen(false)
+        }
+        if (actionId === 'related') {
+          fetchRelatedWallets(wallet)
+        } else if (actionId === 'profile') {
+          loadProfile(wallet)
+        } else if (actionId === 'analysis') {
+          loadPortfolio(wallet)
+        } else if (actionId === 'report') {
+          setActiveView('report')
+          setProfile(null)
+          const result = await loadReport(wallet)
+          // If report is missing, automatically start fetch
+          if (result?.missing) {
+            setError('Starting fetch and analysis...')
+            startRefresh(wallet)
+          }
+        }
+      }}
+    />
+  )
+
   return (
-    <div className="app">
+    <div className={`app ${isMobileLayout ? 'app-mobile' : ''}`}>
       <header className="app-header">
         <h1><span>DeFi</span> Wallet Monitor</h1>
         <div className="user-menu">
@@ -916,43 +995,76 @@ function App() {
             <span className="balance-amount">${balance.toFixed(2)}</span>
           </div>
           <button
-            onClick={() => setActiveView('payment')}
+            onClick={() => {
+              setActiveView('payment')
+              if (isMobileLayout) {
+                setMobileSidebarOpen(false)
+              }
+            }}
             className={`btn-deposit ${activeView === 'payment' ? 'btn-deposit-active' : ''}`}
           >
             Deposit
           </button>
-          <span className="user-email">{user.email}</span>
-          <button onClick={handleLogout} className="btn-logout">Logout</button>
+          <button
+            onClick={handleLogout}
+            className={`btn-logout ${isMobileLayout ? 'btn-logout-icon' : ''}`}
+            aria-label="Logout"
+            title="Logout"
+          >
+            {isMobileLayout ? (
+              <svg className="logout-glyph" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M14 7l5 5-5 5" />
+                <path d="M19 12H9" />
+                <path d="M11 19H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5" />
+              </svg>
+            ) : 'Logout'}
+          </button>
         </div>
       </header>
 
-      <div className="app-layout">
-        <WalletSidebar
-          wallets={wallets}
-          selectedWallet={selectedWallet}
-          onSelect={handleSelect}
-          onSaveTag={saveTag}
-          onRefresh={refreshWallets}
-          onBulkRefresh={startBulkRefresh}
-          onAction={async (wallet, actionId) => {
-            if (actionId === 'related') {
-              fetchRelatedWallets(wallet)
-            } else if (actionId === 'profile') {
-              loadProfile(wallet)
-            } else if (actionId === 'analysis') {
-              loadPortfolio(wallet)
-            } else if (actionId === 'report') {
-              setActiveView('report')
-              setProfile(null)
-              const result = await loadReport(wallet)
-              // If report is missing, automatically start fetch
-              if (result?.missing) {
-                setError('Starting fetch and analysis...')
-                startRefresh(wallet)
-              }
-            }
-          }}
-        />
+      {isMobileLayout && (
+        <div className="mobile-drawer-control">
+          <button
+            className="mobile-drawer-toggle"
+            onClick={() => setMobileSidebarOpen(true)}
+            aria-expanded={mobileSidebarOpen}
+            aria-controls="mobile-wallet-drawer"
+          >
+            Wallets & Categories
+          </button>
+        </div>
+      )}
+
+      <div className={`app-layout ${isMobileLayout ? 'app-layout-mobile' : ''}`}>
+        {!isMobileLayout && walletSidebar}
+
+        {isMobileLayout && (
+          <>
+            <div
+              className={`mobile-drawer-overlay ${mobileSidebarOpen ? 'mobile-drawer-overlay-open' : ''}`}
+              onClick={() => setMobileSidebarOpen(false)}
+            />
+            <aside
+              id="mobile-wallet-drawer"
+              className={`mobile-drawer ${mobileSidebarOpen ? 'mobile-drawer-open' : ''}`}
+              aria-hidden={!mobileSidebarOpen}
+            >
+              <div className="mobile-drawer-topbar">
+                <span>Wallets</span>
+                <button
+                  className="mobile-drawer-close"
+                  onClick={() => setMobileSidebarOpen(false)}
+                  aria-label="Close wallets menu"
+                >
+                  Close
+                </button>
+              </div>
+              <div className="mobile-drawer-body">
+                {walletSidebar}
+              </div>
+            </aside>
+          </>
+        )}
 
         <div className="app-content">
           {selectedWallet && activeView !== 'payment' && (

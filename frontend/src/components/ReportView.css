@@ -407,3 +407,76 @@
 .day-card-placeholder {
   height: 60px;
 }
+
+@media (max-width: 900px) {
+  .report-meta {
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    gap: 10px;
+  }
+
+  .meta-address {
+    width: 100%;
+    font-size: 0.74rem;
+  }
+
+  .report-summary {
+    padding: 12px 14px;
+    margin-bottom: 12px;
+  }
+
+  .calendar-strip {
+    margin-bottom: 12px;
+    padding: 10px 12px;
+  }
+
+  .day-card-header {
+    padding: 10px 12px;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .day-card-date {
+    font-size: 0.8rem;
+  }
+
+  .day-card-summary-preview {
+    width: 100%;
+    order: 3;
+    font-size: 0.78rem;
+  }
+
+  .day-card-body {
+    padding: 12px 14px;
+    font-size: 0.84rem;
+  }
+
+  .tx-list {
+    max-height: 52dvh;
+  }
+
+  .tx-row {
+    padding: 8px 12px;
+  }
+
+  .tx-row-meta {
+    justify-content: space-between;
+    gap: 8px;
+    padding-left: 0;
+  }
+}
+
+@media (max-width: 520px) {
+  .report-empty,
+  .report-loading {
+    padding: 42px 14px;
+  }
+
+  .meta-item {
+    font-size: 0.74rem;
+  }
+
+  .tx-desc {
+    flex-basis: 100%;
+  }
+}
