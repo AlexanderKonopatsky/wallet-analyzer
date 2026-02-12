@@ -253,9 +253,12 @@
 
 .task-spinner {
   display: inline-block;
-  font-size: 1rem;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #30363d;
+  border-top-color: #58a6ff;
+  border-radius: 50%;
   animation: spin 1s linear infinite;
-  color: #58a6ff;
   flex-shrink: 0;
 }
 

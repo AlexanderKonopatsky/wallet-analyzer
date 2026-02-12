@@ -45,7 +45,7 @@ server.py        # FastAPI REST API + background tasks
   - Loads transactions from `data/{wallet}.json`
   - Reads `reports/{wallet}_state.json` (if exists)
   - Filters new transactions (by `processed_tx_keys`)
-  - Groups by days → chunks of 30 transactions
+  - Groups by days → chunks with configurable max size (`CHUNK_MAX_TRANSACTIONS`)
   - Sends to LLM with context
   - Updates state, generates `.md`
 
@@ -53,8 +53,8 @@ server.py        # FastAPI REST API + background tasks
 ```python
 # Group by day
 days = group_by_day(transactions)
-# Split into chunks (max 30 txs per chunk)
-chunks = split_into_chunks(days, max_size=30)
+# Split into chunks (max txs per chunk from CHUNK_MAX_TRANSACTIONS)
+chunks = split_into_chunks(days, max_size=CHUNK_MAX_TRANSACTIONS)
 ```
 
 **LLM Context Management**:
@@ -67,6 +67,9 @@ chunks = split_into_chunks(days, max_size=30)
   - Only complete groups compressed (partial groups remain as individual lines)
   - Content-hash caching in `compression_cache` state field
   - Configurable via `.env`: `CONTEXT_COMPRESSION_ENABLED`, `CONTEXT_DAILY_COUNT`, `CONTEXT_WEEKLY_COUNT`, `CONTEXT_TIER2_GROUP_SIZE`, `CONTEXT_TIER3_SUPER_SIZE`
+- In tx-window mode, additional compression calls are disabled by default; enable with `CONTEXT_COMPRESSION_WITH_WINDOW_ENABLED=true` if needed
+- **Optional tx-window mode** (disabled by default): old context keeps only day summaries covering last N txs + high-importance day anchors
+  - Configurable via `.env`: `CONTEXT_OPTIMIZED_WINDOW_ENABLED`, `CONTEXT_WINDOW_TX_COUNT`, `CONTEXT_IMPORTANCE_ANCHORS`, `CONTEXT_IMPORTANCE_MIN`, `CONTEXT_TX_FALLBACK_PER_DAY`
 - This balances context and token cost (plateaus at ~4K tokens for large wallets)
 
 **System Prompt**: Described in `analyze.py` (SYSTEM_PROMPT)
@@ -219,6 +222,7 @@ async def refresh_wallet(wallet):
 **Optional**:
 - `CIELO_API_KEY_1..99` — additional keys for rotation
 - `FULL_CHRONOLOGY_COUNT` — how many recent analyses to use for context (default: 1)
+- `CHUNK_MAX_TRANSACTIONS` — target max transactions per analysis chunk (default: 30)
 - `AUTO_CLASSIFY_ENABLED` — enable automatic classification of related wallets after analysis (default: false)
 - `AUTO_CLASSIFY_BATCH_SIZE` — parallel classification of related wallets when auto-classify enabled (default: 3)
 
@@ -242,7 +246,7 @@ async def refresh_wallet(wallet):
 ## Performance Considerations
 
 - **Pagination**: Don't load all transactions at once (use `max_pages`)
-- **Chunking**: Limit LLM prompt size (30 txs = ~2000 tokens)
+- **Chunking**: Limit LLM prompt size via `CHUNK_MAX_TRANSACTIONS` (default 30)
 - **Caching**: Don't recalculate same data (state files)
 - **Async**: FastAPI endpoints should be async (where possible)
 - **Threading**: Background tasks in separate threads (don't block API)

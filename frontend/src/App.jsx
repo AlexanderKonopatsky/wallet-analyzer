@@ -1253,7 +1253,7 @@ function App() {
                       )}
                       {task.status === 'fetching' && (
                         <div className="task-status-fetching">
-                          <span className="task-spinner">вџі</span>
+                          <span className="task-spinner" aria-hidden="true"></span>
                           <span className="task-label">Fetching transactions</span>
                           {task.new_count !== undefined && task.total_count !== undefined && (
                             <span className="task-detail">
@@ -1264,7 +1264,7 @@ function App() {
                       )}
                       {task.status === 'analyzing' && (
                         <div className="task-status-analyzing">
-                          <span className="task-spinner">вџі</span>
+                          <span className="task-spinner" aria-hidden="true"></span>
                           <span className="task-label">AI analysis</span>
                           {task.percent !== undefined && (
                             <div className="task-progress">
@@ -1281,7 +1281,7 @@ function App() {
                       )}
                       {task.status === 'classifying' && (
                         <div className="task-status-classifying">
-                          <span className="task-spinner">вџі</span>
+                          <span className="task-spinner" aria-hidden="true"></span>
                           <span className="task-label">Classifying wallets</span>
                           {task.progress && (
                             <span className="task-detail">{task.progress}</span>

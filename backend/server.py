@@ -818,6 +818,8 @@ def run_analysis_pipeline(wallet: str, user_id: int = None, progress_callback=No
         return
 
     txs = filter_transactions(raw_txs)
+    all_day_groups = group_by_days(txs)
+    day_tx_counts = {day: len(day_txs) for day, day_txs in all_day_groups.items()}
 
     state = load_state(wallet)
     chronology_parts = state["chronology_parts"]
@@ -867,7 +869,11 @@ def run_analysis_pipeline(wallet: str, user_id: int = None, progress_callback=No
         tx_text = "\n".join(formatted_lines)
 
         # Build context: compressed summaries + last N full chronologies
-        context = build_context_for_llm(chronology_parts, compression_cache)
+        context = build_context_for_llm(
+            chronology_parts,
+            compression_cache,
+            day_tx_counts=day_tx_counts,
+        )
 
         # Save context for inspection
         from analyze import REPORTS_DIR

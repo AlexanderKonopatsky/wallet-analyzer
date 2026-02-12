@@ -17,14 +17,20 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 MODEL = os.getenv("MODEL", "google/gemini-3-flash-preview")
 DUST_THRESHOLD_USD = 1.0
-CHUNK_MAX_TRANSACTIONS = 30
+CHUNK_MAX_TRANSACTIONS = max(1, int(os.getenv("CHUNK_MAX_TRANSACTIONS", 30)))
 MAX_CONTEXT_SUMMARIES = None  # None = все "Суть дня", или число для ограничения на больших кошельках
 FULL_CHRONOLOGY_COUNT = int(os.getenv("FULL_CHRONOLOGY_COUNT", 1))
 CONTEXT_COMPRESSION_ENABLED = os.getenv("CONTEXT_COMPRESSION_ENABLED", "true").lower() in ("true", "1", "yes")
+CONTEXT_COMPRESSION_WITH_WINDOW_ENABLED = os.getenv("CONTEXT_COMPRESSION_WITH_WINDOW_ENABLED", "false").lower() in ("true", "1", "yes")
 CONTEXT_DAILY_COUNT = int(os.getenv("CONTEXT_DAILY_COUNT", 30))
 CONTEXT_WEEKLY_COUNT = int(os.getenv("CONTEXT_WEEKLY_COUNT", 30))
 TIER2_GROUP_SIZE = int(os.getenv("CONTEXT_TIER2_GROUP_SIZE", 5))
 TIER3_SUPER_SIZE = int(os.getenv("CONTEXT_TIER3_SUPER_SIZE", 3))
+CONTEXT_OPTIMIZED_WINDOW_ENABLED = os.getenv("CONTEXT_OPTIMIZED_WINDOW_ENABLED", "false").lower() in ("true", "1", "yes")
+CONTEXT_WINDOW_TX_COUNT = int(os.getenv("CONTEXT_WINDOW_TX_COUNT", 500))
+CONTEXT_IMPORTANCE_MIN = int(os.getenv("CONTEXT_IMPORTANCE_MIN", 4))
+CONTEXT_IMPORTANCE_ANCHORS = int(os.getenv("CONTEXT_IMPORTANCE_ANCHORS", 10))
+CONTEXT_TX_FALLBACK_PER_DAY = int(os.getenv("CONTEXT_TX_FALLBACK_PER_DAY", 1))
 DATA_DIR = Path(__file__).parent.parent / "data"
 REPORTS_DIR = Path(__file__).parent.parent / "data" / "reports"
 
@@ -386,18 +392,122 @@ def parse_llm_response(text: str) -> str:
 
 
 def extract_day_summaries(chronology: str) -> list:
-    """Extract 'date: Суть дня' pairs from chronology text."""
-    summaries = []
-    current_date = None
-    for line in chronology.split("\n"):
+    """Extract 'date: summary' pairs from chronology text."""
+    return [f"{item['date']}: {item['summary']}" for item in extract_day_metadata(chronology)]
+
+
+def extract_day_metadata(chronology: str) -> list[dict]:
+    """Extract per-day summary and importance score from chronology text."""
+    metadata = []
+    current_item = None
+
+    for raw_line in chronology.split("\n"):
+        line = raw_line.strip()
+
         date_match = re.match(r"^###\s+(\d{4}-\d{2}-\d{2})", line)
         if date_match:
-            current_date = date_match.group(1)
-        summary_match = re.match(r"\*\*Суть дня:\*\*\s*(.+)", line)
-        if summary_match and current_date:
-            summaries.append(f"{current_date}: {summary_match.group(1)}")
-            current_date = None
-    return summaries
+            if current_item and current_item.get("summary"):
+                metadata.append(current_item)
+            current_item = {"date": date_match.group(1), "summary": None, "importance": None}
+            continue
+
+        if not current_item:
+            continue
+
+        summary_match = re.match(r"\*\*(?:Суть дня|Day Summary):\*\*\s*(.+)", line)
+        if summary_match:
+            current_item["summary"] = summary_match.group(1).strip()
+            continue
+
+        importance_match = re.match(r"\*\*(?:Важность|Importance)\s*:\s*([1-5])\*\*", line)
+        if importance_match:
+            current_item["importance"] = int(importance_match.group(1))
+
+    if current_item and current_item.get("summary"):
+        metadata.append(current_item)
+
+    return metadata
+
+
+def _select_summaries_by_tx_window(
+    day_items: list[dict],
+    day_tx_counts: dict[str, int] | None = None,
+) -> tuple[list[str], dict]:
+    """Select recent summaries by transaction window and keep important older anchors."""
+    if not day_items:
+        return [], {
+            "total_days": 0,
+            "window_target_txs": max(1, CONTEXT_WINDOW_TX_COUNT),
+            "window_covered_txs": 0,
+            "window_days": 0,
+            "anchors_added": 0,
+            "fallback_days_used": 0,
+            "selected_days": 0,
+        }
+
+    tx_window = max(1, CONTEXT_WINDOW_TX_COUNT)
+    fallback_per_day = max(1, CONTEXT_TX_FALLBACK_PER_DAY)
+    min_importance = min(5, max(1, CONTEXT_IMPORTANCE_MIN))
+    max_anchors = max(0, CONTEXT_IMPORTANCE_ANCHORS)
+
+    selected_indexes = set()
+    window_indexes = set()
+    covered_txs = 0
+    fallback_days_used = 0
+    high_indexes = {
+        i
+        for i, item in enumerate(day_items)
+        if (item.get("importance") or 0) >= min_importance
+    }
+
+    # Newest-to-oldest window based on tx counts per day.
+    for i in range(len(day_items) - 1, -1, -1):
+        day = day_items[i]["date"]
+        day_txs = fallback_per_day
+        if day_tx_counts and day in day_tx_counts:
+            day_txs = max(1, int(day_tx_counts.get(day, fallback_per_day)))
+        else:
+            fallback_days_used += 1
+
+        selected_indexes.add(i)
+        window_indexes.add(i)
+        covered_txs += day_txs
+        if covered_txs >= tx_window:
+            break
+
+    # Add high-importance anchors from older history.
+    if max_anchors > 0:
+        anchors_added = 0
+        for i in range(len(day_items) - 1, -1, -1):
+            if i in selected_indexes:
+                continue
+            importance = day_items[i].get("importance")
+            if importance is not None and importance >= min_importance:
+                selected_indexes.add(i)
+                anchors_added += 1
+                if anchors_added >= max_anchors:
+                    break
+
+    selected = []
+    for i in sorted(selected_indexes):
+        item = day_items[i]
+        selected.append(f"{item['date']}: {item['summary']}")
+
+    high_selected_indexes = selected_indexes & high_indexes
+    high_added_as_anchors = high_selected_indexes - window_indexes
+    stats = {
+        "total_days": len(day_items),
+        "window_target_txs": tx_window,
+        "window_covered_txs": covered_txs,
+        "window_days": len(window_indexes),
+        "anchors_added": len(selected_indexes) - len(window_indexes),
+        "fallback_days_used": fallback_days_used,
+        "selected_days": len(selected_indexes),
+        "high_days_total": len(high_indexes),
+        "high_days_selected": len(high_selected_indexes),
+        "high_days_added_as_anchors": len(high_added_as_anchors),
+    }
+    return selected, stats
 
 
 # ── Date deduplication ──────────────────────────────────────────────────
@@ -549,10 +659,16 @@ def _get_date_range(summaries: list[str]) -> str:
     return f"{dates[0]} — {dates[-1]}"
 
 
-def _apply_hierarchical_compression(all_summaries: list[str], cache: dict = None) -> list[str]:
+def _apply_hierarchical_compression(
+    all_summaries: list[str],
+    cache: dict = None,
+    align_from_end: bool = False,
+) -> list[str]:
     """Apply 3-tier chunk-based compression.
 
-    Groups are fixed from the beginning of the list (stable for caching).
+    Groups are fixed and stable for caching.
+    If align_from_end=True, groups are aligned from the end of remaining summaries.
+    This is useful for sliding windows where old head changes frequently.
     Only COMPLETE groups are compressed — incomplete groups shown as individual lines.
     This means LLM compression calls happen only every TIER2_GROUP_SIZE chunks.
 
@@ -573,10 +689,20 @@ def _apply_hierarchical_compression(all_summaries: list[str], cache: dict = None
     group_cache = cache.get("groups", {}) if cache else None
     super_cache = cache.get("super_groups", {}) if cache else None
 
-    # Build fixed groups from the beginning (stable alignment for caching)
+    # Build fixed groups.
     groups = []
-    for i in range(0, len(remaining), TIER2_GROUP_SIZE):
-        groups.append(remaining[i:i + TIER2_GROUP_SIZE])
+    if align_from_end:
+        # Keep tail groups stable when oldest summaries are added/removed.
+        prefix = len(remaining) % TIER2_GROUP_SIZE
+        start = 0
+        if prefix:
+            groups.append(remaining[:prefix])
+            start = prefix
+        for i in range(start, len(remaining), TIER2_GROUP_SIZE):
+            groups.append(remaining[i:i + TIER2_GROUP_SIZE])
+    else:
+        for i in range(0, len(remaining), TIER2_GROUP_SIZE):
+            groups.append(remaining[i:i + TIER2_GROUP_SIZE])
 
     # Split groups into Tier 2 and Tier 3
     tier2_group_count = max(1, CONTEXT_WEEKLY_COUNT // TIER2_GROUP_SIZE)
@@ -650,13 +776,19 @@ def _apply_hierarchical_compression(all_summaries: list[str], cache: dict = None
     return result
 
 
-def build_context_for_llm(chronology_parts: list[str], compression_cache: dict = None) -> str:
+def build_context_for_llm(
+    chronology_parts: list[str],
+    compression_cache: dict = None,
+    day_tx_counts: dict[str, int] | None = None,
+) -> str:
     """Build LLM context from chronology parts with optional hierarchical compression.
 
     Args:
         chronology_parts: list of chronology texts from previous chunks
         compression_cache: dict for caching compressed summaries (mutated in-place).
             Structure: {"weekly": {"2024-W03": "..."}, "monthly": {"2024-01": "..."}}
+        day_tx_counts: optional map YYYY-MM-DD -> filtered tx count for that day.
+            Used only when CONTEXT_OPTIMIZED_WINDOW_ENABLED=true.
     """
     if not chronology_parts:
         return "## Контекст предыдущей активности:\nЭто начало анализа, предыдущих данных нет."
@@ -671,18 +803,55 @@ def build_context_for_llm(chronology_parts: list[str], compression_cache: dict =
         recent_parts = chronology_parts
 
     if old_parts:
-        all_summaries = []
+        all_items = []
         for part in old_parts:
-            all_summaries.extend(extract_day_summaries(part))
+            all_items.extend(extract_day_metadata(part))
+
+        if CONTEXT_OPTIMIZED_WINDOW_ENABLED:
+            all_summaries, selection_stats = _select_summaries_by_tx_window(all_items, day_tx_counts)
+            print(
+                "[Context] optimized mode: "
+                f"old_days={selection_stats['total_days']}, "
+                f"target_txs={selection_stats['window_target_txs']}, "
+                f"covered_txs={selection_stats['window_covered_txs']}, "
+                f"window_days={selection_stats['window_days']}, "
+                f"anchors_added={selection_stats['anchors_added']}, "
+                f"high_days_total={selection_stats['high_days_total']}, "
+                f"high_days_selected={selection_stats['high_days_selected']}, "
+                f"high_days_added_as_anchors={selection_stats['high_days_added_as_anchors']}, "
+                f"fallback_days={selection_stats['fallback_days_used']}, "
+                f"selected_days={selection_stats['selected_days']}"
+            )
+        else:
+            all_summaries = [f"{item['date']}: {item['summary']}" for item in all_items]
+            print(f"[Context] legacy mode: old_days={len(all_items)}")
 
         if MAX_CONTEXT_SUMMARIES is not None:
             all_summaries = all_summaries[-MAX_CONTEXT_SUMMARIES:]
 
         if all_summaries:
-            if CONTEXT_COMPRESSION_ENABLED:
-                lines = _apply_hierarchical_compression(all_summaries, compression_cache)
+            pre_compression_count = len(all_summaries)
+            compression_active = CONTEXT_COMPRESSION_ENABLED and (
+                not CONTEXT_OPTIMIZED_WINDOW_ENABLED or CONTEXT_COMPRESSION_WITH_WINDOW_ENABLED
+            )
+
+            if compression_active:
+                lines = _apply_hierarchical_compression(
+                    all_summaries,
+                    compression_cache,
+                    align_from_end=CONTEXT_OPTIMIZED_WINDOW_ENABLED,
+                )
             else:
                 lines = all_summaries
+            print(
+                "[Context] summaries: "
+                f"before_compression={pre_compression_count}, "
+                f"after_compression={len(lines)}, "
+                f"compression_enabled={compression_active}, "
+                f"compression_global={CONTEXT_COMPRESSION_ENABLED}, "
+                f"compression_with_window={CONTEXT_COMPRESSION_WITH_WINDOW_ENABLED}, "
+                f"align_from_end={CONTEXT_OPTIMIZED_WINDOW_ENABLED}"
+            )
             context_sections.append(
                 "## Краткий контекст предыдущей активности:\n"
                 + "\n".join(f"- {s}" for s in lines)
@@ -757,6 +926,8 @@ def analyze_wallet(wallet: str) -> None:
         if not txs:
             print("No transactions for the selected period.")
             return
+    all_day_groups = group_by_days(txs)
+    day_tx_counts = {day: len(day_txs) for day, day_txs in all_day_groups.items()}
 
     # Load existing state
     state = load_state(wallet)
@@ -822,7 +993,11 @@ def analyze_wallet(wallet: str) -> None:
         tx_text = "\n".join(formatted_lines)
 
         # Build context: compressed summaries + last N full chronologies
-        context = build_context_for_llm(chronology_parts, compression_cache)
+        context = build_context_for_llm(
+            chronology_parts,
+            compression_cache,
+            day_tx_counts=day_tx_counts,
+        )
 
         # Save context for inspection
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)

@@ -117,6 +117,7 @@ npm run build
 - `CIELO_API_KEY_1..N` — additional keys for rotation
 - `OPENROUTER_API_KEY` — OpenRouter API key for AI analysis
 - `FULL_CHRONOLOGY_COUNT` — number of recent analyses for full context (default: 1)
+- `CHUNK_MAX_TRANSACTIONS` — target max transactions per analysis chunk (default: 30)
 - `AUTO_CLASSIFY_ENABLED` — enable automatic classification of related wallets after analysis (default: false)
 - `AUTO_CLASSIFY_BATCH_SIZE` — number of related wallets to classify in parallel when auto-classify enabled (default: 3)
 - `AUTO_REFRESH_ENABLED` — enable automatic scheduled refresh of all wallets (default: false)
@@ -124,10 +125,16 @@ npm run build
 
 ### Context Compression (Advanced)
 - `CONTEXT_COMPRESSION_ENABLED` — enable hierarchical compression (default: true)
+- `CONTEXT_COMPRESSION_WITH_WINDOW_ENABLED` — allow extra compression calls when tx-window mode is enabled (default: false)
 - `CONTEXT_DAILY_COUNT` — Tier 1: number of recent summaries without compression (default: 30)
 - `CONTEXT_WEEKLY_COUNT` — Tier 2: number of summaries to compress into groups (default: 30)
 - `CONTEXT_TIER2_GROUP_SIZE` — summaries per group in Tier 2 (default: 5)
 - `CONTEXT_TIER3_SUPER_SIZE` — groups per super-group in Tier 3 (default: 3)
+- `CONTEXT_OPTIMIZED_WINDOW_ENABLED` — enable tx-window context mode (default: false)
+- `CONTEXT_WINDOW_TX_COUNT` — keep summaries that cover this many recent txs (default: 500)
+- `CONTEXT_IMPORTANCE_ANCHORS` — max old high-importance days kept as anchors (default: 10)
+- `CONTEXT_IMPORTANCE_MIN` — minimum day importance (1-5) for anchor inclusion (default: 4)
+- `CONTEXT_TX_FALLBACK_PER_DAY` — fallback tx/day when exact day count is missing (default: 1)
 
 ## Context Compression System
 For large wallets (10K+ transactions), LLM context grows linearly as each chunk receives summaries from all previous chunks. The compression system reduces token usage without losing quality.
