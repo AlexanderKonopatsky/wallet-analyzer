@@ -278,6 +278,40 @@ def save_hidden_wallets(user_id: int, hidden: set) -> None:
         json.dump({"hidden": list(hidden)}, f, indent=2, ensure_ascii=False)
 
 
+def load_user_balance(user_id: int) -> dict:
+    """Load user balance and transaction history."""
+    user_dir = get_user_data_dir(user_id)
+    balance_file = user_dir / "balance.json"
+    if balance_file.exists():
+        try:
+            with open(balance_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {"balance": 0.0, "transactions": []}
+    return {"balance": 0.0, "transactions": []}
+
+
+def save_user_balance(user_id: int, balance_data: dict) -> None:
+    """Save user balance and transaction history."""
+    user_dir = get_user_data_dir(user_id)
+    balance_file = user_dir / "balance.json"
+    with open(balance_file, "w", encoding="utf-8") as f:
+        json.dump(balance_data, f, indent=2, ensure_ascii=False)
+
+
+def ensure_user_balance_initialized(user_id: int, initial_balance: float = 10.0) -> None:
+    """Initialize user balance if not already initialized."""
+    balance_data = load_user_balance(user_id)
+    if not balance_data.get("transactions"):  # New user
+        balance_data["balance"] = initial_balance
+        balance_data["transactions"] = [{
+            "type": "signup_bonus",
+            "amount": initial_balance,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }]
+        save_user_balance(user_id, balance_data)
+
+
 def check_wallet_ownership(db: Database, user_id: int, wallet_address: str) -> bool:
     """Check if user owns this wallet."""
     user = db.get_user_by_id(user_id)
@@ -494,6 +528,36 @@ def background_refresh(wallet: str, user_id: int) -> None:
             refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
             return
 
+        # Calculate cost and deduct from balance
+        tx_count = len(reloaded_data["transactions"])
+        cost_per_1000 = float(os.getenv("COST_PER_1000_TX", "0.20"))
+        cost_multiplier = float(os.getenv("COST_MULTIPLIER", "1.0"))
+        analysis_cost = round((tx_count / 1000) * cost_per_1000 * cost_multiplier, 2)
+
+        # Deduct from balance
+        balance_data = load_user_balance(user_id)
+        current_balance = balance_data.get("balance", 0.0)
+        if current_balance < analysis_cost:
+            print(f"[Refresh] Insufficient balance for {wallet_lower}: need ${analysis_cost}, have ${current_balance}", flush=True)
+            user_refresh_tasks = load_refresh_status(user_id)
+            user_refresh_tasks[wallet_lower] = {"status": "error", "detail": f"Insufficient balance: need ${analysis_cost}, have ${current_balance}"}
+            save_refresh_status(user_id, user_refresh_tasks)
+            refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
+            return
+
+        # Deduct cost from balance
+        balance_data["balance"] = current_balance - analysis_cost
+        if "transactions" not in balance_data:
+            balance_data["transactions"] = []
+        balance_data["transactions"].append({
+            "type": "analysis",
+            "amount": analysis_cost,
+            "wallet": wallet_lower,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+        save_user_balance(user_id, balance_data)
+        print(f"[Refresh] Deducted ${analysis_cost} for analysis. Balance: ${balance_data['balance']}", flush=True)
+
         print(f"[Refresh] Step 2: Analyzing transactions for {wallet_lower}", flush=True)
         user_refresh_tasks = load_refresh_status(user_id)
         user_refresh_tasks[wallet_lower] = {"status": "analyzing", "detail": "Analyzing transactions with AI...", "percent": 0}
@@ -603,6 +667,9 @@ async def verify_code_endpoint(body: VerifyCodeRequest, db: Database = Depends(g
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired code")
 
+    # Initialize balance for new users
+    ensure_user_balance_initialized(user.id)
+
     token = create_jwt_token(user.id)
 
     return {
@@ -625,6 +692,9 @@ async def google_auth(body: GoogleAuthRequest, db: Database = Depends(get_db)):
 
     # Get or create user
     user = get_or_create_user_from_google(db, google_info)
+
+    # Initialize balance for new users
+    ensure_user_balance_initialized(user.id)
 
     # Create JWT token
     token = create_jwt_token(user.id)
@@ -659,6 +729,47 @@ def get_settings():
         "auto_refresh_enabled": AUTO_REFRESH_ENABLED,
         "auto_refresh_time": AUTO_REFRESH_TIME,
     }
+
+
+@app.get("/api/user/balance")
+def get_user_balance(current_user: User = Depends(get_current_user)):
+    """Get current user's balance."""
+    balance_data = load_user_balance(current_user.id)
+    return {
+        "balance": balance_data.get("balance", 0.0),
+        "currency": "USD"
+    }
+
+
+@app.post("/api/user/balance/deduct")
+def deduct_balance(
+    amount: float,
+    current_user: User = Depends(get_current_user)
+):
+    """Deduct amount from user's balance (for analysis cost)."""
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be positive")
+
+    balance_data = load_user_balance(current_user.id)
+    current_balance = balance_data.get("balance", 0.0)
+
+    if current_balance < amount:
+        raise HTTPException(status_code=402, detail="Insufficient balance")
+
+    # Deduct amount and save transaction
+    balance_data["balance"] = round(current_balance - amount, 2)
+    if "transactions" not in balance_data:
+        balance_data["transactions"] = []
+
+    balance_data["transactions"].append({
+        "type": "deduction",
+        "amount": amount,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+
+    save_user_balance(current_user.id, balance_data)
+
+    return {"balance": balance_data["balance"]}
 
 
 @app.get("/api/wallets")

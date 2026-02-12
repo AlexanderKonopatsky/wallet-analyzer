@@ -129,6 +129,7 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [activeTasks, setActiveTasks] = useState({}) // All active refresh tasks
+  const [balance, setBalance] = useState(0)
   const pollIntervalRef = useRef(null)
 
   // Profile
@@ -186,6 +187,25 @@ function App() {
 
     checkAuth()
   }, [])
+
+  // Load balance when user is authenticated
+  useEffect(() => {
+    if (!user) return
+
+    const loadBalance = async () => {
+      try {
+        const res = await apiCall('/api/user/balance')
+        if (res && res.ok) {
+          const data = await res.json()
+          setBalance(data.balance)
+        }
+      } catch (err) {
+        console.error('Failed to load balance:', err)
+      }
+    }
+
+    loadBalance()
+  }, [user])
 
   // Save classResults to localStorage whenever it changes
   useEffect(() => {
@@ -616,6 +636,19 @@ function App() {
     } catch { /* ignore */ }
   }, [relatedWallet, fetchRelatedWallets])
 
+  // Refresh balance
+  const refreshBalance = useCallback(async () => {
+    try {
+      const res = await apiCall('/api/user/balance')
+      if (res && res.ok) {
+        const data = await res.json()
+        setBalance(data.balance)
+      }
+    } catch (err) {
+      console.error('Failed to refresh balance:', err)
+    }
+  }, [])
+
   // Monitor all active tasks (polling)
   const startMonitoring = useCallback(() => {
     // Clear any existing poll interval
@@ -647,6 +680,8 @@ function App() {
           if (selectedWallet) {
             await loadReport(selectedWallet)
           }
+          // Refresh balance after analysis completes
+          await refreshBalance()
         }
       } catch {
         clearInterval(poll)
@@ -656,7 +691,7 @@ function App() {
     }, 2000)
 
     pollIntervalRef.current = poll
-  }, [loadReport, refreshWallets, selectedWallet])
+  }, [loadReport, refreshWallets, refreshBalance, selectedWallet])
 
   const estimateCost = useCallback(async (wallet) => {
     if (!wallet) return null
@@ -875,6 +910,10 @@ function App() {
       <header className="app-header">
         <h1><span>DeFi</span> Wallet Monitor</h1>
         <div className="user-menu">
+          <div className="balance-display">
+            <span className="balance-label">Balance:</span>
+            <span className="balance-amount">${balance.toFixed(2)}</span>
+          </div>
           <span className="user-email">{user.email}</span>
           <button onClick={handleLogout} className="btn-logout">Logout</button>
         </div>
