@@ -915,6 +915,12 @@ function App() {
             <span className="balance-label">Balance:</span>
             <span className="balance-amount">${balance.toFixed(2)}</span>
           </div>
+          <button
+            onClick={() => setActiveView('payment')}
+            className={`btn-deposit ${activeView === 'payment' ? 'btn-deposit-active' : ''}`}
+          >
+            Deposit
+          </button>
           <span className="user-email">{user.email}</span>
           <button onClick={handleLogout} className="btn-logout">Logout</button>
         </div>
@@ -949,19 +955,12 @@ function App() {
         />
 
         <div className="app-content">
-          {(selectedWallet || activeView === 'payment') && (
+          {selectedWallet && activeView !== 'payment' && (
             <div className="wallet-toolbar">
-              <button
-                className={`btn btn-view-toggle ${activeView === 'payment' ? 'btn-view-toggle-active' : ''}`}
-                onClick={() => setActiveView(activeView === 'payment' ? 'report' : 'payment')}
-              >
-                {activeView === 'payment' ? 'Back to Report' : 'Payment'}
-              </button>
-
               <button
                 className="btn btn-refresh"
                 onClick={() => startRefresh(selectedWallet)}
-                disabled={isRefreshing || !selectedWallet || activeView === 'payment'}
+                disabled={isRefreshing || !selectedWallet}
               >
                 {isRefreshing ? 'Updating...' : 'Update Data'}
               </button>

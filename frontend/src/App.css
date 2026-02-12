@@ -74,6 +74,27 @@
   background: #30363d;
 }
 
+.btn-deposit {
+  padding: 6px 12px;
+  background: #1f6feb;
+  color: #fff;
+  border: 1px solid #388bfd;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  transition: background 0.15s;
+}
+
+.btn-deposit:hover {
+  background: #388bfd;
+}
+
+.btn-deposit-active {
+  background: #30363d;
+  border-color: #484f58;
+}
+
 .app-loading {
   display: flex;
   align-items: center;
@@ -320,20 +341,6 @@
 
 .btn-refresh:hover:not(:disabled) {
   background: #30363d;
-}
-
-.btn-view-toggle {
-  background: #1f6feb;
-  color: #fff;
-}
-
-.btn-view-toggle:hover:not(:disabled) {
-  background: #388bfd;
-}
-
-.btn-view-toggle-active {
-  background: #30363d;
-  border-color: #484f58;
 }
 
 /* Refresh status */
