@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+﻿import { useState, useEffect, useCallback, useRef } from 'react'
 import './App.css'
 import WalletSidebar from './components/WalletSidebar'
 import ReportView, { TxRow } from './components/ReportView'
@@ -7,6 +7,8 @@ import PortfolioView from './components/PortfolioView'
 import PaymentWidget from './components/PaymentWidget'
 import LoginPage from './components/LoginPage'
 import { apiCall, setAuthToken, getUser, logout } from './utils/api'
+
+const ACTIVE_TASK_STATUSES = new Set(['cost_estimate', 'fetching', 'analyzing', 'classifying'])
 
 function countSections(markdown) {
   if (!markdown) return 0
@@ -111,7 +113,7 @@ function RelatedCard({ rw, mainWallet, classificationOverride, classifyingNow })
 
       <div className="related-card-dates">
         {new Date(rw.first_interaction * 1000).toLocaleDateString('en-US')}
-        {' — '}
+        {' вЂ” '}
         {new Date(rw.last_interaction * 1000).toLocaleDateString('en-US')}
       </div>
     </div>
@@ -172,7 +174,7 @@ function App() {
     } catch {
       return {}
     }
-  }) // address → classification
+  }) // address в†’ classification
   const [classifyingAddrs, setClassifyingAddrs] = useState([]) // currently classifying (batch)
   const [batchSize, setBatchSize] = useState(3) // default, will be loaded from settings
 
@@ -453,7 +455,7 @@ function App() {
     const createFingerprints = (markdown) => {
       const sections = markdown.match(/### \d{4}-\d{2}-\d{2}[^\n]*/g) || []
       return sections.map((section, idx) => {
-        const date = section.match(/### (\d{4}-\d{2}-\d{2}(?: — \d{4}-\d{2}-\d{2})?)/)?.[1] || ''
+        const date = section.match(/### (\d{4}-\d{2}-\d{2}(?: вЂ” \d{4}-\d{2}-\d{2})?)/)?.[1] || ''
         const nextSectionIdx = markdown.indexOf('### ', markdown.indexOf(section) + 1)
         const content = nextSectionIdx > 0
           ? markdown.slice(markdown.indexOf(section), nextSectionIdx)
@@ -1063,8 +1065,14 @@ function App() {
     return <LoginPage onLogin={handleLogin} />
   }
 
-  const isRefreshing = Object.keys(activeTasks).length > 0
-  const hasActiveTasks = Object.keys(activeTasks).length > 0
+  const taskEntries = Object.entries(activeTasks).filter(([, task]) =>
+    task && typeof task === 'object'
+  )
+  const hasRunningTasks = taskEntries.some(([, task]) =>
+    ACTIVE_TASK_STATUSES.has(task.status)
+  )
+  const isRefreshing = hasRunningTasks
+  const hasActiveTasks = taskEntries.length > 0
 
   // Helper to get wallet label (tag or shortened address)
   const getWalletLabel = (address) => {
@@ -1200,13 +1208,13 @@ function App() {
           )}
 
           {/* Active tasks panel */}
-          {hasActiveTasks && (
-            <div className="active-tasks-panel">
-              <div className="active-tasks-header">
-                Active Tasks ({Object.keys(activeTasks).length})
-              </div>
+          <div className="active-tasks-panel">
+            <div className="active-tasks-header">
+              {hasActiveTasks ? `Active Tasks (${taskEntries.length})` : 'Active Tasks'}
+            </div>
+            {hasActiveTasks ? (
               <div className="active-tasks-list">
-                {Object.entries(activeTasks).map(([wallet, task]) => (
+                {taskEntries.map(([wallet, task]) => (
                   <div key={wallet} className="active-task-item">
                     <div className="active-task-wallet">
                       {getWalletLabel(wallet)}
@@ -1245,7 +1253,7 @@ function App() {
                       )}
                       {task.status === 'fetching' && (
                         <div className="task-status-fetching">
-                          <span className="task-spinner">⟳</span>
+                          <span className="task-spinner">вџі</span>
                           <span className="task-label">Fetching transactions</span>
                           {task.new_count !== undefined && task.total_count !== undefined && (
                             <span className="task-detail">
@@ -1256,7 +1264,7 @@ function App() {
                       )}
                       {task.status === 'analyzing' && (
                         <div className="task-status-analyzing">
-                          <span className="task-spinner">⟳</span>
+                          <span className="task-spinner">вџі</span>
                           <span className="task-label">AI analysis</span>
                           {task.percent !== undefined && (
                             <div className="task-progress">
@@ -1273,19 +1281,27 @@ function App() {
                       )}
                       {task.status === 'classifying' && (
                         <div className="task-status-classifying">
-                          <span className="task-spinner">⟳</span>
+                          <span className="task-spinner">вџі</span>
                           <span className="task-label">Classifying wallets</span>
                           {task.progress && (
                             <span className="task-detail">{task.progress}</span>
                           )}
                         </div>
                       )}
+                      {!ACTIVE_TASK_STATUSES.has(task.status) && (
+                        <div className="task-status-unknown">
+                          <span className="task-label">Task in progress</span>
+                          {task.detail && <span className="task-detail">{task.detail}</span>}
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}
               </div>
-            </div>
-          )}
+            ) : (
+              <div className="active-tasks-empty">No active tasks</div>
+            )}
+          </div>
 
           {error && <div className="error-banner">{error}</div>}
 
@@ -1335,7 +1351,7 @@ function App() {
                 onClick={() => resolveProfileCostModal(false)}
                 aria-label="Close"
               >
-                ×
+                Г—
               </button>
             </div>
 
@@ -1375,3 +1391,5 @@ function App() {
 }
 
 export default App
+
+
