@@ -1,0 +1,330 @@
+.payment-widget {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  padding: 0;
+  color: #e6edf3;
+}
+
+.payment-widget .container {
+  max-width: 700px;
+  width: 100%;
+}
+
+.payment-widget h1 {
+  margin-bottom: 20px;
+  font-size: 1.35rem;
+  font-weight: 600;
+  color: #e6edf3;
+}
+
+.payment-widget .step {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 12px;
+  padding: 24px;
+}
+
+.payment-widget .form-group {
+  margin-bottom: 16px;
+}
+
+.payment-widget label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.payment-widget input,
+.payment-widget select {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  background: #0d1117;
+  color: #e6edf3;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.payment-widget input:focus,
+.payment-widget select:focus {
+  outline: none;
+  border-color: #58a6ff;
+  box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15);
+}
+
+.payment-widget .hint {
+  display: block;
+  font-size: 0.75rem;
+  color: #8b949e;
+  margin-top: 6px;
+}
+
+.payment-widget .btn {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  background: #21262d;
+  color: #e6edf3;
+  margin-top: 8px;
+}
+
+.payment-widget .btn:hover:not(:disabled) {
+  background: #30363d;
+}
+
+.payment-widget .btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.payment-widget .btn-primary {
+  background: #1f6feb;
+  border-color: #1f6feb;
+  color: #fff;
+  margin-top: 12px;
+}
+
+.payment-widget .btn-primary:hover:not(:disabled) {
+  background: #388bfd;
+}
+
+.payment-widget .btn-secondary {
+  background: #21262d;
+}
+
+.payment-widget .btn-small {
+  padding: 6px 10px;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  background: #21262d;
+  color: #e6edf3;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.payment-widget .btn-small:hover {
+  background: #30363d;
+}
+
+.payment-widget .quote-box {
+  margin-top: 16px;
+  padding: 16px;
+  background: #0d1117;
+  border-radius: 10px;
+  border: 1px solid #30363d;
+}
+
+.payment-widget .quote-box h3 {
+  font-size: 0.8rem;
+  font-weight: 700;
+  margin-bottom: 10px;
+  color: #8b949e;
+  text-transform: uppercase;
+}
+
+.payment-widget .quote-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  font-size: 0.9rem;
+}
+
+.payment-widget .quote-row span:last-child {
+  font-weight: 600;
+}
+
+.payment-widget .deposit-card h2 {
+  font-size: 1rem;
+  margin-bottom: 14px;
+  color: #e6edf3;
+}
+
+.payment-widget .deposit-info .label {
+  font-size: 0.75rem;
+  color: #8b949e;
+}
+
+.payment-widget .deposit-info .value {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.payment-widget .deposit-amount,
+.payment-widget .deposit-chain {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid #21262d;
+}
+
+.payment-widget .deposit-address-box {
+  margin-top: 12px;
+}
+
+.payment-widget .deposit-address-box .label {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.payment-widget .address-copy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #0d1117;
+  padding: 10px 12px;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+}
+
+.payment-widget .address-copy code {
+  font-size: 0.8rem;
+  word-break: break-all;
+  flex: 1;
+}
+
+.payment-widget .warning {
+  margin-top: 12px;
+  padding: 10px;
+  background: rgba(210, 153, 34, 0.15);
+  border: 1px solid rgba(210, 153, 34, 0.5);
+  border-radius: 8px;
+  font-size: 0.8rem;
+  color: #d29922;
+}
+
+.payment-widget .status-tracker {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid #21262d;
+}
+
+.payment-widget .status-tracker h3 {
+  font-size: 0.85rem;
+  margin-bottom: 10px;
+}
+
+.payment-widget .progress-steps {
+  display: flex;
+  justify-content: space-between;
+  position: relative;
+  margin-bottom: 14px;
+}
+
+.payment-widget .progress-steps::before {
+  content: '';
+  position: absolute;
+  top: 10px;
+  left: 20px;
+  right: 20px;
+  height: 2px;
+  background: #30363d;
+}
+
+.payment-widget .progress-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+  z-index: 1;
+}
+
+.payment-widget .step-dot {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #30363d;
+  border: 2px solid #30363d;
+}
+
+.payment-widget .progress-step span {
+  font-size: 0.7rem;
+  color: #8b949e;
+  white-space: nowrap;
+}
+
+.payment-widget .progress-step.active .step-dot {
+  background: #1f6feb;
+  border-color: #1f6feb;
+}
+
+.payment-widget .progress-step.active span {
+  color: #58a6ff;
+}
+
+.payment-widget .progress-step.done .step-dot {
+  background: #3fb950;
+  border-color: #3fb950;
+}
+
+.payment-widget .progress-step.done span {
+  color: #3fb950;
+}
+
+.payment-widget .progress-step.failed .step-dot {
+  background: #f85149;
+  border-color: #f85149;
+}
+
+.payment-widget .progress-step.failed span {
+  color: #f85149;
+}
+
+.payment-widget .status-text {
+  text-align: center;
+  font-size: 0.85rem;
+  color: #8b949e;
+  padding: 8px;
+}
+
+.payment-widget .status-details {
+  margin-top: 10px;
+  padding: 10px;
+  background: rgba(63, 185, 80, 0.12);
+  border: 1px solid rgba(63, 185, 80, 0.5);
+  border-radius: 8px;
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.payment-widget .status-details a {
+  color: #58a6ff;
+  word-break: break-all;
+}
+
+.payment-widget .error {
+  margin-top: 12px;
+  padding: 10px;
+  background: rgba(248, 81, 73, 0.1);
+  border: 1px solid rgba(248, 81, 73, 0.5);
+  border-radius: 8px;
+  font-size: 0.8rem;
+  color: #f85149;
+}
+
+.payment-widget .loading {
+  margin-top: 12px;
+  text-align: center;
+  font-size: 0.85rem;
+  color: #8b949e;
+}
+
+@media (max-width: 768px) {
+  .payment-widget .step {
+    padding: 16px;
+  }
+}

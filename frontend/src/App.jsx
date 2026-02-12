@@ -4,6 +4,7 @@ import WalletSidebar from './components/WalletSidebar'
 import ReportView, { TxRow } from './components/ReportView'
 import ProfileView from './components/ProfileView'
 import PortfolioView from './components/PortfolioView'
+import PaymentWidget from './components/PaymentWidget'
 import LoginPage from './components/LoginPage'
 import { apiCall, setAuthToken, getUser, logout } from './utils/api'
 
@@ -133,7 +134,7 @@ function App() {
   const pollIntervalRef = useRef(null)
 
   // Profile
-  const [activeView, setActiveView] = useState('report') // 'report' | 'profile' | 'portfolio'
+  const [activeView, setActiveView] = useState('report') // 'report' | 'profile' | 'portfolio' | 'payment'
   const [profile, setProfile] = useState(null)
   const [profileLoading, setProfileLoading] = useState(false)
 
@@ -948,12 +949,19 @@ function App() {
         />
 
         <div className="app-content">
-          {selectedWallet && (
+          {(selectedWallet || activeView === 'payment') && (
             <div className="wallet-toolbar">
+              <button
+                className={`btn btn-view-toggle ${activeView === 'payment' ? 'btn-view-toggle-active' : ''}`}
+                onClick={() => setActiveView(activeView === 'payment' ? 'report' : 'payment')}
+              >
+                {activeView === 'payment' ? 'Back to Report' : 'Payment'}
+              </button>
+
               <button
                 className="btn btn-refresh"
                 onClick={() => startRefresh(selectedWallet)}
-                disabled={isRefreshing}
+                disabled={isRefreshing || !selectedWallet || activeView === 'payment'}
               >
                 {isRefreshing ? 'Updating...' : 'Update Data'}
               </button>
@@ -1050,7 +1058,9 @@ function App() {
 
           {error && <div className="error-banner">{error}</div>}
 
-          {activeView === 'portfolio' ? (
+          {activeView === 'payment' ? (
+            <PaymentWidget onPaymentSuccess={refreshBalance} />
+          ) : activeView === 'portfolio' ? (
             <PortfolioView
               portfolio={portfolio}
               loading={portfolioLoading}

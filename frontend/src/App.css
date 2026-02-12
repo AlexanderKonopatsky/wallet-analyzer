@@ -322,6 +322,20 @@
   background: #30363d;
 }
 
+.btn-view-toggle {
+  background: #1f6feb;
+  color: #fff;
+}
+
+.btn-view-toggle:hover:not(:disabled) {
+  background: #388bfd;
+}
+
+.btn-view-toggle-active {
+  background: #30363d;
+  border-color: #484f58;
+}
+
 /* Refresh status */
 .refresh-status {
   font-size: 0.825rem;

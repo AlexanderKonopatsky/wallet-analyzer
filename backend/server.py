@@ -3,11 +3,13 @@ import io
 import json
 import os
 import re
+import secrets
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import requests
 from dotenv import load_dotenv
 
 # Load .env from project root
@@ -141,6 +143,24 @@ TAGS_FILE = DATA_DIR / "wallet_tags.json"
 REFRESH_STATUS_FILE = DATA_DIR / "refresh_status.json"
 EXCLUDED_WALLETS_FILE = DATA_DIR / "excluded_wallets.json"
 HIDDEN_WALLETS_FILE = DATA_DIR / "hidden_wallets.json"
+
+# Payment settings
+ONECLICK_API_BASE = "https://1click.chaindefuser.com"
+ONECLICK_CACHE_TTL_SECONDS = 5 * 60
+PAYMENT_RECEIVE_ADDRESS = (os.getenv("RECEIVE_ADDRESS") or "").strip()
+PAYMENT_RECEIVE_TOKEN = (os.getenv("RECEIVE_TOKEN") or "base:usdc").strip()
+PAYMENT_STATUS_DESCRIPTIONS = {
+    "PENDING_DEPOSIT": "Waiting for deposit...",
+    "KNOWN_DEPOSIT_TX": "Deposit detected, confirming...",
+    "INCOMPLETE_DEPOSIT": "Deposit incomplete",
+    "PROCESSING": "Processing swap...",
+    "SUCCESS": "Payment received!",
+    "FAILED": "Payment failed",
+    "REFUNDED": "Refunded to sender",
+}
+_oneclick_tokens_cache: list | None = None
+_oneclick_tokens_cache_time = 0.0
+_oneclick_tokens_lock = threading.Lock()
 
 # Profile generation settings
 PROFILE_MODEL = os.getenv("PROFILE_MODEL", "google/gemini-3-pro-preview")
@@ -299,7 +319,7 @@ def save_user_balance(user_id: int, balance_data: dict) -> None:
         json.dump(balance_data, f, indent=2, ensure_ascii=False)
 
 
-def ensure_user_balance_initialized(user_id: int, initial_balance: float = 10.0) -> None:
+def ensure_user_balance_initialized(user_id: int, initial_balance: float = 1.0) -> None:
     """Initialize user balance if not already initialized."""
     balance_data = load_user_balance(user_id)
     if not balance_data.get("transactions"):  # New user
@@ -310,6 +330,374 @@ def ensure_user_balance_initialized(user_id: int, initial_balance: float = 10.0)
             "timestamp": datetime.now(timezone.utc).isoformat()
         }]
         save_user_balance(user_id, balance_data)
+
+
+def load_user_payments(user_id: int) -> list:
+    """Load user payments history."""
+    user_dir = get_user_data_dir(user_id)
+    payments_file = user_dir / "payments.json"
+    if payments_file.exists():
+        try:
+            with open(payments_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, list) else []
+        except Exception:
+            return []
+    return []
+
+
+def save_user_payments(user_id: int, payments: list) -> None:
+    """Save user payments history."""
+    user_dir = get_user_data_dir(user_id)
+    payments_file = user_dir / "payments.json"
+    with open(payments_file, "w", encoding="utf-8") as f:
+        json.dump(payments, f, indent=2, ensure_ascii=False)
+
+
+def create_user_payment(user_id: int, payment: dict) -> dict:
+    """Create and persist a payment record for user."""
+    payments = load_user_payments(user_id)
+    payment["id"] = f"pay_{int(time.time() * 1000)}_{secrets.token_hex(3)}"
+    payment["createdAt"] = datetime.now(timezone.utc).isoformat()
+    payment["status"] = "PENDING_DEPOSIT"
+    payment["completedAt"] = None
+    payments.append(payment)
+    save_user_payments(user_id, payments)
+    return payment
+
+
+def parse_positive_amount(value) -> float:
+    """Parse positive numeric amount from string/number."""
+    try:
+        parsed = float(str(value))
+    except (TypeError, ValueError):
+        return 0.0
+    return parsed if parsed > 0 else 0.0
+
+
+def apply_payment_credit_if_needed(user_id: int, payment: dict) -> dict:
+    """Credit user balance for successful payment exactly once."""
+    if payment.get("status") != "SUCCESS":
+        return payment
+    if payment.get("balanceCredited") is True:
+        return payment
+
+    payment_id = payment.get("id")
+    if not payment_id:
+        return payment
+
+    balance_data = load_user_balance(user_id)
+    transactions = balance_data.get("transactions", [])
+
+    existing_topup = next(
+        (
+            tx for tx in transactions
+            if tx.get("type") == "payment_topup" and tx.get("payment_id") == payment_id
+        ),
+        None,
+    )
+    if existing_topup:
+        credited_at = existing_topup.get("timestamp") or datetime.now(timezone.utc).isoformat()
+        amount = parse_positive_amount(existing_topup.get("amount"))
+        updated = update_user_payment(user_id, payment_id, {
+            "balanceCredited": True,
+            "balanceCreditedAt": credited_at,
+            "balanceCreditedAmount": amount,
+        })
+        return updated or {**payment, "balanceCredited": True, "balanceCreditedAt": credited_at, "balanceCreditedAmount": amount}
+
+    credit_amount = (
+        parse_positive_amount(payment.get("amountOut"))
+        or parse_positive_amount(payment.get("amount"))
+        or parse_positive_amount(payment.get("originAmount"))
+    )
+    if credit_amount <= 0:
+        return payment
+
+    credit_amount = round(credit_amount, 2)
+    timestamp = datetime.now(timezone.utc).isoformat()
+
+    current_balance = parse_positive_amount(balance_data.get("balance"))
+    balance_data["balance"] = round(current_balance + credit_amount, 2)
+    balance_data.setdefault("transactions", []).append({
+        "type": "payment_topup",
+        "amount": credit_amount,
+        "payment_id": payment_id,
+        "symbol": payment.get("destinationSymbol"),
+        "timestamp": timestamp,
+    })
+    save_user_balance(user_id, balance_data)
+
+    updated = update_user_payment(user_id, payment_id, {
+        "balanceCredited": True,
+        "balanceCreditedAt": timestamp,
+        "balanceCreditedAmount": credit_amount,
+    })
+    return updated or {**payment, "balanceCredited": True, "balanceCreditedAt": timestamp, "balanceCreditedAmount": credit_amount}
+
+
+def get_user_payment(user_id: int, payment_id: str) -> dict | None:
+    """Get payment by ID for specific user."""
+    payments = load_user_payments(user_id)
+    return next((payment for payment in payments if payment.get("id") == payment_id), None)
+
+
+def update_user_payment(user_id: int, payment_id: str, updates: dict) -> dict | None:
+    """Update payment by ID for specific user."""
+    payments = load_user_payments(user_id)
+    for idx, payment in enumerate(payments):
+        if payment.get("id") != payment_id:
+            continue
+        payments[idx].update(updates)
+        save_user_payments(user_id, payments)
+        return payments[idx]
+    return None
+
+
+def oneclick_headers() -> dict:
+    """Build 1Click API headers."""
+    headers = {"Content-Type": "application/json"}
+    oneclick_jwt = (os.getenv("ONECLICK_JWT") or "").strip()
+    if oneclick_jwt:
+        headers["Authorization"] = f"Bearer {oneclick_jwt}"
+    return headers
+
+
+def oneclick_request(endpoint: str, method: str = "GET", payload: dict | None = None) -> dict | list:
+    """Make request to 1Click API."""
+    url = f"{ONECLICK_API_BASE}{endpoint}"
+    try:
+        response = requests.request(
+            method=method,
+            url=url,
+            headers=oneclick_headers(),
+            json=payload,
+            timeout=25,
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"1Click API request failed: {exc}") from exc
+
+    if not response.ok:
+        error_text = response.text[:500]
+        raise HTTPException(
+            status_code=502,
+            detail=f"1Click API error ({response.status_code}): {error_text}",
+        )
+
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="1Click API returned invalid JSON") from exc
+
+
+def get_cached_oneclick_tokens() -> list:
+    """Get cached 1Click token list."""
+    global _oneclick_tokens_cache, _oneclick_tokens_cache_time
+    with _oneclick_tokens_lock:
+        if (
+            _oneclick_tokens_cache is not None
+            and time.time() - _oneclick_tokens_cache_time < ONECLICK_CACHE_TTL_SECONDS
+        ):
+            return _oneclick_tokens_cache
+
+        tokens = oneclick_request("/v0/tokens")
+        if not isinstance(tokens, list):
+            raise HTTPException(status_code=502, detail="Unexpected 1Click /v0/tokens response")
+
+        _oneclick_tokens_cache = tokens
+        _oneclick_tokens_cache_time = time.time()
+        return tokens
+
+
+def parse_token_id(token_id: str) -> tuple[str, str]:
+    """Parse token string in format chain:token."""
+    parts = token_id.split(":")
+    if len(parts) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid token format: {token_id}. Expected chain:token",
+        )
+    return parts[0].lower(), ":".join(parts[1:])
+
+
+def find_token(tokens: list, chain: str, token_id: str) -> dict | None:
+    """Find token by chain + symbol/address/id."""
+    chain_lower = chain.lower()
+    token_lower = token_id.lower()
+
+    for token in tokens:
+        blockchain = (token.get("blockchain") or token.get("chain") or "").lower()
+        if blockchain != chain_lower:
+            continue
+
+        symbol = (token.get("symbol") or "").lower()
+        contract_address = (token.get("contractAddress") or token.get("address") or "").lower()
+        asset_id = (token.get("assetId") or "").lower()
+        defuse_asset_id = (token.get("defuseAssetId") or "").lower()
+
+        if (
+            symbol == token_lower
+            or contract_address == token_lower
+            or asset_id == token_lower
+            or token_lower in defuse_asset_id
+        ):
+            return token
+    return None
+
+
+def to_base_units(amount_str: str, decimals: int) -> str:
+    """Convert decimal amount to base units."""
+    amount = (amount_str or "").strip()
+    if not re.fullmatch(r"\d*\.?\d+", amount):
+        raise HTTPException(status_code=400, detail=f"Invalid amount: {amount_str}")
+
+    if "." in amount:
+        int_part, frac_part = amount.split(".", 1)
+    else:
+        int_part, frac_part = amount, ""
+
+    int_part = int_part or "0"
+    frac_padded = (frac_part + ("0" * decimals))[:decimals]
+    normalized = f"{int(int_part)}{frac_padded}".lstrip("0")
+    return normalized or "0"
+
+
+def from_base_units(base_units: str, decimals: int) -> str:
+    """Convert base units to decimal amount."""
+    raw = str(base_units or "0")
+    if not raw.isdigit():
+        return "0"
+    if raw == "0":
+        return "0"
+
+    padded = raw.rjust(decimals + 1, "0")
+    int_part = padded[:-decimals] if decimals > 0 else padded
+    frac_part = padded[-decimals:].rstrip("0") if decimals > 0 else ""
+    return f"{int_part}.{frac_part}" if frac_part else int_part
+
+
+def get_chain_type(chain_id: str) -> str:
+    """Map chain id to address validator type."""
+    chain = chain_id.lower()
+    if chain == "near":
+        return "near"
+    if chain in ("sol", "solana"):
+        return "solana"
+    if chain == "aptos":
+        return "aptos"
+    if chain == "sui":
+        return "sui"
+    if chain == "ton":
+        return "ton"
+    if chain == "stellar":
+        return "stellar"
+    if chain == "tron":
+        return "tron"
+    return "evm"
+
+
+def is_valid_address(address: str, chain_type: str) -> bool:
+    """Validate wallet address by chain type."""
+    if not address:
+        return False
+    if chain_type == "near":
+        return bool(re.fullmatch(r"[a-z0-9._-]{2,64}", address) or re.fullmatch(r"[0-9a-f]{64}", address))
+    if chain_type == "evm":
+        return bool(re.fullmatch(r"0x[a-fA-F0-9]{40}", address))
+    if chain_type == "solana":
+        return bool(re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{32,44}", address))
+    if chain_type in ("aptos", "sui"):
+        return bool(re.fullmatch(r"0x[a-fA-F0-9]{64}", address))
+    if chain_type == "ton":
+        return bool(
+            re.fullmatch(r"[a-zA-Z0-9_-]{48}", address)
+            or re.fullmatch(r"[UEk][Qf][a-zA-Z0-9_-]{46}", address)
+        )
+    if chain_type == "tron":
+        return bool(re.fullmatch(r"T[a-zA-Z0-9]{33}", address))
+    if chain_type == "stellar":
+        return bool(re.fullmatch(r"G[A-Z0-9]{55}", address))
+    return len(address) > 5
+
+
+def payment_config() -> tuple[str, tuple[str, str]]:
+    """Return payment destination config."""
+    if not PAYMENT_RECEIVE_ADDRESS:
+        raise HTTPException(
+            status_code=503,
+            detail="Payment service is not configured: RECEIVE_ADDRESS is missing",
+        )
+    try:
+        destination_chain, destination_token = parse_token_id(PAYMENT_RECEIVE_TOKEN)
+    except HTTPException as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Payment service is not configured: invalid RECEIVE_TOKEN ({PAYMENT_RECEIVE_TOKEN})",
+        ) from exc
+    return PAYMENT_RECEIVE_ADDRESS, (destination_chain, destination_token)
+
+
+def oneclick_get_quote(
+    *,
+    dry: bool,
+    origin_asset: str,
+    destination_asset: str,
+    amount: str,
+    recipient: str,
+    refund_to: str,
+    slippage_tolerance: int = 100,
+) -> dict:
+    """Get 1Click quote."""
+    deadline = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    payload = {
+        "dry": dry,
+        "swapType": "EXACT_INPUT",
+        "slippageTolerance": slippage_tolerance,
+        "originAsset": origin_asset,
+        "depositType": "ORIGIN_CHAIN",
+        "destinationAsset": destination_asset,
+        "amount": str(amount),
+        "refundTo": refund_to,
+        "refundType": "ORIGIN_CHAIN",
+        "recipient": recipient,
+        "recipientType": "DESTINATION_CHAIN",
+        "deadline": deadline,
+        "quoteWaitingTimeMs": 5000,
+    }
+    response = oneclick_request("/v0/quote", method="POST", payload=payload)
+    if not isinstance(response, dict):
+        raise HTTPException(status_code=502, detail="Unexpected 1Click quote response")
+    return response
+
+
+def oneclick_execution_status(deposit_address: str) -> dict:
+    """Get 1Click execution status by deposit address."""
+    url = f"{ONECLICK_API_BASE}/v0/status"
+    try:
+        response = requests.get(
+            url,
+            headers=oneclick_headers(),
+            params={"depositAddress": deposit_address},
+            timeout=25,
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"1Click API request failed: {exc}") from exc
+
+    if not response.ok:
+        error_text = response.text[:500]
+        raise HTTPException(
+            status_code=502,
+            detail=f"1Click API error ({response.status_code}): {error_text}",
+        )
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="1Click API returned invalid JSON") from exc
+
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail="Unexpected 1Click status response")
+    return data
 
 
 def check_wallet_ownership(db: Database, user_id: int, wallet_address: str) -> bool:
@@ -639,6 +1027,21 @@ class GoogleAuthRequest(BaseModel):
 # ── Auth Endpoints ────────────────────────────────────────────────────────────
 
 
+class PaymentQuoteRequest(BaseModel):
+    """Request body for /api/quote"""
+    amount: str
+    originToken: str
+    refundAddress: str
+
+
+class PaymentCreateRequest(BaseModel):
+    """Request body for /api/payment/create"""
+    amount: str
+    originToken: str
+    refundAddress: str
+    originAmount: str
+
+
 @app.get("/api/auth/config")
 async def auth_config():
     """Return public auth config (Google Client ID) for frontend."""
@@ -770,6 +1173,269 @@ def deduct_balance(
     save_user_balance(current_user.id, balance_data)
 
     return {"balance": balance_data["balance"]}
+
+
+@app.get("/api/tokens")
+def get_payment_tokens(current_user: User = Depends(get_current_user)):
+    """List supported payment tokens grouped by chain."""
+    _ = current_user
+    tokens = get_cached_oneclick_tokens()
+    stablecoins = {"USDC", "USDT", "DAI"}
+
+    grouped = {}
+    filtered_count = 0
+    for token in tokens:
+        symbol = str(token.get("symbol") or "").upper()
+        if symbol not in stablecoins:
+            continue
+        filtered_count += 1
+
+        chain = token.get("blockchain") or token.get("chain") or "unknown"
+        if chain not in grouped:
+            grouped[chain] = []
+        grouped[chain].append({
+            "symbol": token.get("symbol"),
+            "name": token.get("name") or "",
+            "decimals": token.get("decimals"),
+            "chain": chain,
+            "defuseAssetId": token.get("defuseAssetId") or token.get("assetId"),
+            "contractAddress": token.get("contractAddress") or token.get("address"),
+        })
+
+    print(f"[/api/tokens] Filtered {filtered_count} stablecoins across {len(grouped)} chains")
+    return {"tokens": grouped}
+
+
+@app.post("/api/quote")
+def get_payment_quote(
+    body: PaymentQuoteRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Get dry quote for payment."""
+    _ = current_user
+    receive_address, (dest_chain, dest_token_id) = payment_config()
+
+    amount = body.amount.strip()
+    origin_token = body.originToken.strip()
+    refund_address = body.refundAddress.strip()
+    if not amount or not origin_token or not refund_address:
+        raise HTTPException(
+            status_code=400,
+            detail="amount, originToken, and refundAddress are required",
+        )
+
+    tokens = get_cached_oneclick_tokens()
+    source_chain, source_token_id = parse_token_id(origin_token)
+
+    from_token = find_token(tokens, source_chain, source_token_id)
+    if not from_token:
+        raise HTTPException(status_code=400, detail=f"Token not found: {origin_token}")
+
+    to_token = find_token(tokens, dest_chain, dest_token_id)
+    if not to_token:
+        raise HTTPException(status_code=500, detail="Destination token is not configured correctly")
+
+    chain_type = get_chain_type(source_chain)
+    if not is_valid_address(refund_address, chain_type):
+        raise HTTPException(status_code=400, detail=f"Invalid refund address for {source_chain}")
+
+    from_decimals = int(from_token.get("decimals") or 0)
+    to_decimals = int(to_token.get("decimals") or 0)
+    origin_amount_base = to_base_units(amount, from_decimals)
+    if origin_amount_base == "0":
+        raise HTTPException(status_code=400, detail="Amount must be greater than 0")
+
+    quote_response = oneclick_get_quote(
+        dry=True,
+        origin_asset=from_token.get("defuseAssetId") or from_token.get("assetId"),
+        destination_asset=to_token.get("defuseAssetId") or to_token.get("assetId"),
+        amount=origin_amount_base,
+        recipient=receive_address,
+        refund_to=refund_address,
+    )
+    quote_data = quote_response.get("quote", quote_response)
+
+    return {
+        "originToken": origin_token,
+        "originSymbol": from_token.get("symbol"),
+        "originChain": source_chain,
+        "originAmount": amount,
+        "originDecimals": from_decimals,
+        "destinationAmount": from_base_units(quote_data.get("amountOut") or "0", to_decimals),
+        "destinationSymbol": to_token.get("symbol"),
+        "destinationChain": dest_chain,
+        "feeUsd": quote_data.get("feeUsd"),
+    }
+
+
+@app.post("/api/payment/create")
+def create_payment_endpoint(
+    body: PaymentCreateRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Create payment and return deposit address."""
+    receive_address, (dest_chain, dest_token_id) = payment_config()
+
+    amount = body.amount.strip()
+    origin_token = body.originToken.strip()
+    refund_address = body.refundAddress.strip()
+    origin_amount = body.originAmount.strip()
+    if not amount or not origin_token or not refund_address or not origin_amount:
+        raise HTTPException(
+            status_code=400,
+            detail="amount, originToken, refundAddress, and originAmount are required",
+        )
+
+    tokens = get_cached_oneclick_tokens()
+    source_chain, source_token_id = parse_token_id(origin_token)
+
+    from_token = find_token(tokens, source_chain, source_token_id)
+    if not from_token:
+        raise HTTPException(status_code=400, detail=f"Token not found: {origin_token}")
+
+    to_token = find_token(tokens, dest_chain, dest_token_id)
+    if not to_token:
+        raise HTTPException(status_code=500, detail="Destination token is not configured")
+
+    chain_type = get_chain_type(source_chain)
+    if not is_valid_address(refund_address, chain_type):
+        raise HTTPException(status_code=400, detail=f"Invalid refund address for {source_chain}")
+
+    from_decimals = int(from_token.get("decimals") or 0)
+    to_decimals = int(to_token.get("decimals") or 0)
+    origin_amount_base = to_base_units(origin_amount, from_decimals)
+    if origin_amount_base == "0":
+        raise HTTPException(status_code=400, detail="originAmount must be greater than 0")
+
+    quote_response = oneclick_get_quote(
+        dry=False,
+        origin_asset=from_token.get("defuseAssetId") or from_token.get("assetId"),
+        destination_asset=to_token.get("defuseAssetId") or to_token.get("assetId"),
+        amount=origin_amount_base,
+        recipient=receive_address,
+        refund_to=refund_address,
+    )
+    quote_data = quote_response.get("quote", quote_response)
+    deposit_address = quote_data.get("depositAddress")
+    if not deposit_address:
+        raise HTTPException(status_code=502, detail="No deposit address received from payment provider")
+
+    payment = create_user_payment(current_user.id, {
+        "amount": amount,
+        "originAmount": origin_amount,
+        "originAmountBase": origin_amount_base,
+        "originToken": origin_token,
+        "originSymbol": from_token.get("symbol"),
+        "originChain": source_chain,
+        "originDecimals": from_decimals,
+        "destinationToken": PAYMENT_RECEIVE_TOKEN,
+        "destinationSymbol": to_token.get("symbol"),
+        "depositAddress": deposit_address,
+        "refundAddress": refund_address,
+        "amountOut": from_base_units(quote_data.get("amountOut") or "0", to_decimals),
+        "swapDetails": None,
+        "balanceCredited": False,
+    })
+
+    return {
+        "id": payment["id"],
+        "depositAddress": payment["depositAddress"],
+        "originAmount": payment["originAmount"],
+        "originSymbol": payment["originSymbol"],
+        "originChain": payment["originChain"],
+        "amountOut": payment["amountOut"],
+        "destinationSymbol": payment["destinationSymbol"],
+        "status": payment["status"],
+    }
+
+
+@app.get("/api/payment/{payment_id}/status")
+def get_payment_status(
+    payment_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    """Get payment status by ID."""
+    payment = get_user_payment(current_user.id, payment_id)
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found")
+
+    terminal_statuses = {"SUCCESS", "FAILED", "REFUNDED"}
+    if payment.get("status") in terminal_statuses:
+        if payment.get("status") == "SUCCESS":
+            payment = apply_payment_credit_if_needed(current_user.id, payment)
+        return {
+            "id": payment["id"],
+            "status": payment["status"],
+            "statusDescription": PAYMENT_STATUS_DESCRIPTIONS.get(payment["status"], payment["status"]),
+            "originAmount": payment.get("originAmount"),
+            "originSymbol": payment.get("originSymbol"),
+            "originChain": payment.get("originChain"),
+            "amountOut": payment.get("amountOut"),
+            "destinationSymbol": payment.get("destinationSymbol"),
+            "depositAddress": payment.get("depositAddress"),
+            "refundAddress": payment.get("refundAddress"),
+            "createdAt": payment.get("createdAt"),
+            "completedAt": payment.get("completedAt"),
+            "swapDetails": payment.get("swapDetails"),
+        }
+
+    try:
+        api_status = oneclick_execution_status(payment["depositAddress"])
+        new_status = api_status.get("status")
+        updates = {}
+        if new_status and new_status != payment.get("status"):
+            updates["status"] = new_status
+            if new_status in terminal_statuses:
+                updates["completedAt"] = datetime.now(timezone.utc).isoformat()
+        if api_status.get("swapDetails"):
+            updates["swapDetails"] = api_status.get("swapDetails")
+        if updates:
+            payment = update_user_payment(current_user.id, payment_id, updates) or payment
+        if payment.get("status") == "SUCCESS":
+            payment = apply_payment_credit_if_needed(current_user.id, payment)
+    except HTTPException as api_error:
+        if payment.get("status") == "SUCCESS":
+            payment = apply_payment_credit_if_needed(current_user.id, payment)
+        return {
+            "id": payment["id"],
+            "status": payment.get("status"),
+            "statusDescription": PAYMENT_STATUS_DESCRIPTIONS.get(payment.get("status"), payment.get("status")),
+            "originAmount": payment.get("originAmount"),
+            "originSymbol": payment.get("originSymbol"),
+            "originChain": payment.get("originChain"),
+            "amountOut": payment.get("amountOut"),
+            "destinationSymbol": payment.get("destinationSymbol"),
+            "depositAddress": payment.get("depositAddress"),
+            "refundAddress": payment.get("refundAddress"),
+            "createdAt": payment.get("createdAt"),
+            "completedAt": payment.get("completedAt"),
+            "swapDetails": payment.get("swapDetails"),
+            "apiError": api_error.detail,
+        }
+
+    return {
+        "id": payment["id"],
+        "status": payment.get("status"),
+        "statusDescription": PAYMENT_STATUS_DESCRIPTIONS.get(payment.get("status"), payment.get("status")),
+        "originAmount": payment.get("originAmount"),
+        "originSymbol": payment.get("originSymbol"),
+        "originChain": payment.get("originChain"),
+        "amountOut": payment.get("amountOut"),
+        "destinationSymbol": payment.get("destinationSymbol"),
+        "depositAddress": payment.get("depositAddress"),
+        "refundAddress": payment.get("refundAddress"),
+        "createdAt": payment.get("createdAt"),
+        "completedAt": payment.get("completedAt"),
+        "swapDetails": payment.get("swapDetails"),
+    }
+
+
+@app.get("/api/payments")
+def list_user_payments(current_user: User = Depends(get_current_user)):
+    """List payment history for current user."""
+    payments = load_user_payments(current_user.id)
+    payments_sorted = sorted(payments, key=lambda payment: payment.get("createdAt", ""), reverse=True)
+    return {"payments": payments_sorted}
 
 
 @app.get("/api/wallets")
