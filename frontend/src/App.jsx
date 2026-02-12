@@ -144,6 +144,13 @@ function App() {
   const [activeView, setActiveView] = useState('report') // 'report' | 'profile' | 'portfolio' | 'payment'
   const [profile, setProfile] = useState(null)
   const [profileLoading, setProfileLoading] = useState(false)
+  const [profileCostModal, setProfileCostModal] = useState({
+    open: false,
+    wallet: '',
+    model: '',
+    estimatedCostUsd: 0
+  })
+  const profileCostModalResolveRef = useRef(null)
 
   // Portfolio
   const [portfolio, setPortfolio] = useState(null)
@@ -237,6 +244,54 @@ function App() {
       })
       .catch(() => {})
   }, [user])
+
+  const requestProfileCostConfirmation = useCallback(({ wallet, model, estimatedCostUsd }) => {
+    return new Promise((resolve) => {
+      profileCostModalResolveRef.current = resolve
+      setProfileCostModal({
+        open: true,
+        wallet,
+        model,
+        estimatedCostUsd
+      })
+    })
+  }, [])
+
+  const resolveProfileCostModal = useCallback((confirmed) => {
+    setProfileCostModal(prev => ({ ...prev, open: false }))
+    if (profileCostModalResolveRef.current) {
+      profileCostModalResolveRef.current(confirmed)
+      profileCostModalResolveRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!profileCostModal.open) return
+
+    const previousOverflow = document.body.style.overflow
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        resolveProfileCostModal(false)
+      }
+    }
+
+    document.body.style.overflow = 'hidden'
+    document.addEventListener('keydown', onKeyDown)
+
+    return () => {
+      document.body.style.overflow = previousOverflow
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [profileCostModal.open, resolveProfileCostModal])
+
+  useEffect(() => {
+    return () => {
+      if (profileCostModalResolveRef.current) {
+        profileCostModalResolveRef.current(false)
+        profileCostModalResolveRef.current = null
+      }
+    }
+  }, [])
 
   // Batch auto-classify: when relatedData loads, classify unclassified wallets in batches
   useEffect(() => {
@@ -562,32 +617,65 @@ function App() {
 
   const loadProfile = useCallback(async (wallet, forceRegenerate = false) => {
     if (!wallet) return
-    setProfileLoading(true)
     setError(null)
     setActiveView('profile')
+    setProfileLoading(false)
     try {
+      const walletLower = wallet.toLowerCase()
+
       if (!forceRegenerate) {
-        const res = await apiCall(`/api/profile/${wallet.toLowerCase()}`)
+        const res = await apiCall(`/api/profile/${walletLower}`)
         if (res && res.ok) {
           setProfile(await res.json())
-          setProfileLoading(false)
           return
         }
       }
+
+      // Show cost to user before generation
+      setProfileLoading(false)
+      const estimateQuery = forceRegenerate ? '?force=true' : ''
+      const estimateRes = await apiCall(`/api/profile/${walletLower}/estimate-cost${estimateQuery}`)
+      if (!estimateRes || !estimateRes.ok) {
+        const err = estimateRes ? await estimateRes.json().catch(() => ({})) : {}
+        throw new Error(err.detail || 'Failed to estimate profile cost')
+      }
+      const estimate = await estimateRes.json()
+
+      if (estimate.charge_required) {
+        const estimatedCost = Number(estimate.estimated_cost_usd || 0)
+        const confirmed = await requestProfileCostConfirmation({
+          wallet: walletLower,
+          model: estimate.model,
+          estimatedCostUsd: estimatedCost
+        })
+        if (!confirmed) {
+          return
+        }
+      }
+
       // Generate (or regenerate)
-      const genRes = await apiCall(`/api/profile/${wallet.toLowerCase()}/generate`, { method: 'POST' })
+      setProfileLoading(true)
+      const genQuery = forceRegenerate ? '?force=true' : ''
+      const genRes = await apiCall(`/api/profile/${walletLower}/generate${genQuery}`, { method: 'POST' })
       if (!genRes || !genRes.ok) {
         const err = genRes ? await genRes.json() : {}
         throw new Error(err.detail || 'Failed to generate profile')
       }
       setProfile(await genRes.json())
+
+      // Refresh balance after profile generation charge
+      const balanceRes = await apiCall('/api/user/balance')
+      if (balanceRes && balanceRes.ok) {
+        const balanceData = await balanceRes.json()
+        setBalance(balanceData.balance)
+      }
     } catch (err) {
       setError(err.message)
       setProfile(null)
     } finally {
       setProfileLoading(false)
     }
-  }, [])
+  }, [requestProfileCostConfirmation])
 
   const loadPortfolio = useCallback(async (wallet, forceRefresh = false) => {
     if (!wallet) return
@@ -1195,6 +1283,60 @@ function App() {
           )}
         </div>
       </div>
+
+      {profileCostModal.open && (
+        <div
+          className="modal-overlay profile-cost-overlay"
+          onClick={() => resolveProfileCostModal(false)}
+        >
+          <div
+            className="modal-content profile-cost-modal"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="profile-cost-title"
+          >
+            <div className="modal-header">
+              <h2 id="profile-cost-title">Generate Profile</h2>
+              <button
+                className="modal-close"
+                onClick={() => resolveProfileCostModal(false)}
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="profile-cost-body">
+              <div className="profile-cost-value">
+                ${Number(profileCostModal.estimatedCostUsd || 0).toFixed(4)}
+              </div>
+              <div className="profile-cost-label">Will be deducted from your balance</div>
+              <div className="profile-cost-meta">
+                <div>
+                  Wallet: {profileCostModal.wallet.slice(0, 8)}...{profileCostModal.wallet.slice(-6)}
+                </div>
+                <div>Model: {profileCostModal.model}</div>
+              </div>
+            </div>
+
+            <div className="profile-cost-actions">
+              <button
+                className="btn-cost-cancel"
+                onClick={() => resolveProfileCostModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn-cost-start profile-cost-confirm"
+                onClick={() => resolveProfileCostModal(true)}
+              >
+                Generate Profile
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   )

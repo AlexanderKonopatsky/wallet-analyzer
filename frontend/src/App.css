@@ -506,6 +506,55 @@
   overflow: hidden;
 }
 
+.profile-cost-overlay {
+  z-index: 1200;
+}
+
+.profile-cost-modal {
+  width: 460px;
+  max-width: 92vw;
+}
+
+.profile-cost-body {
+  padding: 16px 20px 18px;
+  border-top: 1px solid #21262d;
+  border-bottom: 1px solid #21262d;
+}
+
+.profile-cost-value {
+  font-size: 1.9rem;
+  line-height: 1.1;
+  font-weight: 700;
+  color: #58a6ff;
+  margin-bottom: 6px;
+}
+
+.profile-cost-label {
+  color: #c9d1d9;
+  font-size: 0.92rem;
+  margin-bottom: 12px;
+}
+
+.profile-cost-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 0.8rem;
+  color: #8b949e;
+  font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+}
+
+.profile-cost-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 20px 16px;
+}
+
+.profile-cost-confirm {
+  min-width: 150px;
+}
+
 .modal-header {
   display: flex;
   align-items: center;

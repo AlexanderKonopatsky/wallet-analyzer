@@ -464,10 +464,6 @@ const PaymentWidget = ({ apiUrl = '', onPaymentSuccess }) => {
                 <span>You send:</span>
                 <span>{currentQuote.originAmount} {currentQuote.originSymbol}</span>
               </div>
-              <div className="quote-row">
-                <span>We receive:</span>
-                <span>~{currentQuote.destinationAmount} {currentQuote.destinationSymbol}</span>
-              </div>
               {currentQuote.feeUsd && (
                 <div className="quote-row">
                   <span>Fee:</span>

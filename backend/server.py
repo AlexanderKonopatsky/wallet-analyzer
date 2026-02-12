@@ -165,6 +165,8 @@ _oneclick_tokens_lock = threading.Lock()
 # Profile generation settings
 PROFILE_MODEL = os.getenv("PROFILE_MODEL", "google/gemini-3-pro-preview")
 PROFILE_MAX_TOKENS = int(os.getenv("PROFILE_MAX_TOKENS", 15192))
+PROFILE_COST_BASE_USD = float(os.getenv("PROFILE_COST_BASE_USD", "0.03686"))
+PROFILE_COST_PER_WORD_USD = float(os.getenv("PROFILE_COST_PER_WORD_USD", "0.000005846"))
 PROFILE_SYSTEM_PROMPT = """Ты — опытный ончейн-аналитик. Тебе дана подробная хронология активности крипто-кошелька.
 
 Прочитай отчёт целиком и составь глубокий профиль владельца. Не следуй шаблону — каждый кошелёк уникален, и профиль должен отражать именно то, что делает этого владельца особенным. Пиши о том, что действительно бросается в глаза и заслуживает внимания.
@@ -735,6 +737,25 @@ def get_wallet_meta(wallet: str) -> dict:
         "address": data.get("wallet", wallet),
         "last_updated": data.get("last_updated"),
         "tx_count": len(data.get("transactions", [])),
+    }
+
+
+def estimate_profile_generation_cost(markdown: str) -> dict:
+    """Estimate profile generation cost from report text."""
+    report_words = len(re.findall(r"\S+", markdown))
+    report_chars = len(markdown)
+    cost_multiplier = float(os.getenv("COST_MULTIPLIER", "1.0"))
+
+    base_cost = PROFILE_COST_BASE_USD + (report_words * PROFILE_COST_PER_WORD_USD)
+    final_cost = round(base_cost * cost_multiplier, 4)
+
+    return {
+        "model": PROFILE_MODEL,
+        "report_words": report_words,
+        "report_chars": report_chars,
+        "cost_multiplier": cost_multiplier,
+        "base_cost_usd": round(base_cost, 4),
+        "cost_usd": final_cost,
     }
 
 
@@ -1729,9 +1750,52 @@ def get_profile(
         return json.load(f)
 
 
+@app.get("/api/profile/{wallet}/estimate-cost")
+def estimate_profile_cost(
+    wallet: str,
+    force: bool = False,
+    current_user: User = Depends(get_current_user),
+    db: Database = Depends(get_db)
+):
+    """Estimate profile generation cost from report size/word count."""
+    wallet = wallet.lower()
+
+    # Security: only allow viewing if user owns wallet
+    if not check_wallet_ownership(db, current_user.id, wallet):
+        raise HTTPException(status_code=403, detail="Wallet not found in your list")
+
+    report_path = REPORTS_DIR / f"{wallet}.md"
+    if not report_path.exists():
+        raise HTTPException(status_code=404, detail="Report not found. Refresh data first.")
+
+    markdown = report_path.read_text(encoding="utf-8")
+    report_hash = hashlib.md5(markdown.encode("utf-8")).hexdigest()
+    estimate = estimate_profile_generation_cost(markdown)
+
+    is_cached = False
+    profile_path = REPORTS_DIR / f"{wallet}_profile.json"
+    if profile_path.exists():
+        with open(profile_path, "r", encoding="utf-8") as f:
+            cached = json.load(f)
+        is_cached = cached.get("report_hash") == report_hash
+
+    charge_required = force or not is_cached
+    return {
+        "wallet": wallet,
+        "model": estimate["model"],
+        "report_words": estimate["report_words"],
+        "report_chars": estimate["report_chars"],
+        "cost_multiplier": estimate["cost_multiplier"],
+        "estimated_cost_usd": estimate["cost_usd"] if charge_required else 0.0,
+        "charge_required": charge_required,
+        "cached": is_cached,
+    }
+
+
 @app.post("/api/profile/{wallet}/generate")
 def generate_profile(
     wallet: str,
+    force: bool = False,
     current_user: User = Depends(get_current_user),
     db: Database = Depends(get_db)
 ):
@@ -1753,21 +1817,46 @@ def generate_profile(
 
     # Check cache
     profile_path = REPORTS_DIR / f"{wallet}_profile.json"
-    if profile_path.exists():
+    if profile_path.exists() and not force:
         with open(profile_path, "r", encoding="utf-8") as f:
             cached = json.load(f)
         if cached.get("report_hash") == report_hash:
             return cached
 
+    estimate = estimate_profile_generation_cost(markdown)
+    profile_cost = estimate["cost_usd"]
+
+    # Check balance before LLM call
+    balance_data = load_user_balance(current_user.id)
+    current_balance = float(balance_data.get("balance", 0.0) or 0.0)
+    if current_balance < profile_cost:
+        raise HTTPException(
+            status_code=402,
+            detail=f"Insufficient balance: need ${profile_cost:.4f}, have ${current_balance:.4f}"
+        )
+
     # Generate profile via LLM
     user_prompt = f"Вот хронология активности кошелька:\n\n{markdown}\n\nСоставь профиль этого кошелька."
     profile_text = call_llm(PROFILE_SYSTEM_PROMPT, user_prompt, model=PROFILE_MODEL, max_tokens=PROFILE_MAX_TOKENS)
+
+    # Deduct generation cost from user's balance
+    balance_data["balance"] = round(current_balance - profile_cost, 4)
+    balance_data.setdefault("transactions", []).append({
+        "type": "profile",
+        "amount": profile_cost,
+        "wallet": wallet,
+        "model": PROFILE_MODEL,
+        "report_words": estimate["report_words"],
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+    save_user_balance(current_user.id, balance_data)
 
     profile_data = {
         "wallet": wallet,
         "profile_text": profile_text,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "report_hash": report_hash,
+        "generation_cost_usd": profile_cost,
     }
 
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
