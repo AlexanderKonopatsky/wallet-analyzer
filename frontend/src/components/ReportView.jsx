@@ -344,6 +344,7 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
   const [activityByDay, setActivityByDay] = useState(null)
   const [activityLoading, setActivityLoading] = useState(false)
   const [activityLoaded, setActivityLoaded] = useState(false)
+  const [walletChains, setWalletChains] = useState([])
   const [selectedChains, setSelectedChains] = useState([])
   const [volumeThresholdInput, setVolumeThresholdInput] = useState('')
   const [sections, setSections] = useState(initialSections)
@@ -357,27 +358,45 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
   const dayActivityMap = useMemo(() => {
     if (!activityByDay || typeof activityByDay !== 'object') return new Map()
 
+    const byDay = activityByDay?.by_day && typeof activityByDay.by_day === 'object'
+      ? activityByDay.by_day
+      : activityByDay
+
     const map = new Map()
-    Object.entries(activityByDay).forEach(([day, dayTxs]) => {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !Array.isArray(dayTxs)) return
+    Object.entries(byDay).forEach(([day, dayData]) => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return
 
       const chainsInDay = new Set()
       let maxTxUsdInDay = 0
 
-      dayTxs.forEach((tx) => {
-        const chainValues = [tx?.chain, tx?.from_chain, tx?.to_chain]
-        chainValues.forEach((chainValue) => {
-          const chain = typeof chainValue === 'string' ? chainValue.trim() : ''
+      if (Array.isArray(dayData)) {
+        // Backward compatibility: legacy shape from /api/transactions/{wallet}.
+        dayData.forEach((tx) => {
+          const chainValues = [tx?.chain, tx?.from_chain, tx?.to_chain]
+          chainValues.forEach((chainValue) => {
+            const chain = typeof chainValue === 'string' ? chainValue.trim().toLowerCase() : ''
+            if (chain && chain !== '?') {
+              chainsInDay.add(chain)
+            }
+          })
+
+          const volumeUsd = getTxVolumeUsd(tx)
+          if (volumeUsd > maxTxUsdInDay) {
+            maxTxUsdInDay = volumeUsd
+          }
+        })
+      } else if (dayData && typeof dayData === 'object') {
+        const rawChains = Array.isArray(dayData.chains) ? dayData.chains : []
+        rawChains.forEach((chainValue) => {
+          const chain = typeof chainValue === 'string' ? chainValue.trim().toLowerCase() : ''
           if (chain && chain !== '?') {
             chainsInDay.add(chain)
           }
         })
 
-        const volumeUsd = getTxVolumeUsd(tx)
-        if (volumeUsd > maxTxUsdInDay) {
-          maxTxUsdInDay = volumeUsd
-        }
-      })
+        const rawMaxUsd = Number(dayData.max_volume_usd)
+        maxTxUsdInDay = Number.isFinite(rawMaxUsd) && rawMaxUsd > 0 ? rawMaxUsd : 0
+      }
 
       map.set(day, { chainsInDay, maxTxUsdInDay })
     })
@@ -386,6 +405,18 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
   }, [activityByDay])
 
   const availableChains = useMemo(() => {
+    if (Array.isArray(walletChains) && walletChains.length > 0) {
+      const normalized = [...new Set(
+        walletChains
+          .map((chain) => (typeof chain === 'string' ? chain.trim().toLowerCase() : ''))
+          .filter(Boolean)
+      )]
+
+      return normalized
+        .sort((left, right) => left.localeCompare(right))
+        .map((value) => ({ value, label: value }))
+    }
+
     const normalized = new Set()
     dayActivityMap.forEach(({ chainsInDay }) => {
       chainsInDay.forEach((chain) => {
@@ -399,7 +430,7 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
     return [...normalized]
       .sort((left, right) => left.localeCompare(right))
       .map((value) => ({ value, label: value }))
-  }, [dayActivityMap])
+  }, [dayActivityMap, walletChains])
 
   const volumeThreshold = Number(volumeThresholdInput)
   const isChainFilterActive = selectedChains.length > 0
@@ -487,6 +518,32 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
     let cancelled = false
 
     if (!walletAddress) {
+      setWalletChains([])
+      return () => {
+        cancelled = true
+      }
+    }
+
+    apiCall(`/api/wallet-chains/${encodeURIComponent(walletAddress)}`)
+      .then(res => (res && res.ok ? res.json() : null))
+      .then(data => {
+        if (cancelled) return
+        const chains = Array.isArray(data?.chains) ? data.chains : []
+        setWalletChains(chains)
+      })
+      .catch(() => {
+        if (!cancelled) setWalletChains([])
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [walletAddress])
+
+  useEffect(() => {
+    let cancelled = false
+
+    if (!walletAddress) {
       setActivityByDay(null)
       setActivityLoading(false)
       setActivityLoaded(false)
@@ -497,7 +554,7 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
 
     setActivityLoading(true)
     setActivityLoaded(false)
-    apiCall(`/api/transactions/${encodeURIComponent(walletAddress)}`)
+    apiCall(`/api/day-activity/${encodeURIComponent(walletAddress)}`)
       .then(res => (res && res.ok ? res.json() : null))
       .then(data => {
         if (cancelled) return
