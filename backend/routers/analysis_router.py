@@ -13,7 +13,7 @@ from analyze import (
     group_by_days,
     load_transactions,
 )
-from auth import get_current_user
+from auth import get_current_user, get_optional_user
 from categories import get_wallets_by_category
 from db import Database, User, get_db
 from main import fetch_all_transactions, load_existing_data, save_data
@@ -25,6 +25,11 @@ from user_data_store import (
     revoke_analysis_consent,
     save_refresh_status,
 )
+
+PUBLIC_DEMO_WALLET = os.getenv(
+    "PUBLIC_DEMO_WALLET",
+    "0xfeb016d0d14ac0fa6d69199608b0776d007203b2",
+).lower()
 
 
 def create_analysis_router(
@@ -227,19 +232,23 @@ def create_analysis_router(
     @router.get("/api/tx-counts/{wallet}")
     def get_tx_counts(
         wallet: str,
-        current_user: User = Depends(get_current_user),
+        current_user: User | None = Depends(get_optional_user),
         db: Database = Depends(get_db),
     ):
         """Get transaction counts per day."""
         wallet = wallet.lower()
 
         data_file = data_dir / f"{wallet}.json"
-        ensure_wallet_access(
-            db=db,
-            user_id=current_user.id,
-            wallet=wallet,
-            can_auto_attach=data_file.exists(),
-        )
+        if current_user is None:
+            if wallet != PUBLIC_DEMO_WALLET:
+                raise HTTPException(status_code=401, detail="Not authenticated")
+        else:
+            ensure_wallet_access(
+                db=db,
+                user_id=current_user.id,
+                wallet=wallet,
+                can_auto_attach=data_file.exists(),
+            )
 
         raw_txs = load_transactions(wallet)
         if not raw_txs:
@@ -254,19 +263,23 @@ def create_analysis_router(
         wallet: str,
         date_from: str = None,
         date_to: str = None,
-        current_user: User = Depends(get_current_user),
+        current_user: User | None = Depends(get_optional_user),
         db: Database = Depends(get_db),
     ):
         """Get wallet transactions, optionally filtered by date range."""
         wallet = wallet.lower()
 
         data_file = data_dir / f"{wallet}.json"
-        ensure_wallet_access(
-            db=db,
-            user_id=current_user.id,
-            wallet=wallet,
-            can_auto_attach=data_file.exists(),
-        )
+        if current_user is None:
+            if wallet != PUBLIC_DEMO_WALLET:
+                raise HTTPException(status_code=401, detail="Not authenticated")
+        else:
+            ensure_wallet_access(
+                db=db,
+                user_id=current_user.id,
+                wallet=wallet,
+                can_auto_attach=data_file.exists(),
+            )
 
         raw_txs = load_transactions(wallet)
         if not raw_txs:
