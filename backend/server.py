@@ -3,8 +3,6 @@ import io
 import json
 import os
 import re
-import secrets
-import shutil
 import sys
 import threading
 import time
@@ -85,6 +83,34 @@ from payment_provider import (
     payment_config,
     to_base_units,
 )
+from user_data_store import (
+    load_wallet_tags,
+    save_wallet_tags,
+    load_refresh_status,
+    save_refresh_status,
+    load_hidden_wallets,
+    save_hidden_wallets,
+    load_analysis_consents,
+    grant_analysis_consent,
+    revoke_analysis_consent,
+    load_user_balance,
+    save_user_balance,
+    ensure_user_balance_initialized,
+    load_user_payments,
+    create_user_payment,
+    parse_positive_amount,
+    apply_payment_credit_if_needed,
+    get_user_payment,
+    update_user_payment,
+)
+from backup_utils import (
+    create_data_backup_archive,
+    safe_extract_zip,
+    resolve_data_import_root,
+    copy_tree,
+    clear_directory,
+    resolve_backup_archive_path,
+)
 
 CHAIN_EXPLORERS = {
     "ethereum": "https://etherscan.io/tx/",
@@ -153,9 +179,6 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 print(f"[Init] Data directory: {DATA_DIR} (exists: {DATA_DIR.exists()})")
 print(f"[Init] Reports directory: {REPORTS_DIR} (exists: {REPORTS_DIR.exists()})")
-TAGS_FILE = DATA_DIR / "wallet_tags.json"
-REFRESH_STATUS_FILE = DATA_DIR / "refresh_status.json"
-HIDDEN_WALLETS_FILE = DATA_DIR / "hidden_wallets.json"
 DATA_BACKUP_ARCHIVE_DIR = DATA_DIR / "backups"
 DATA_BACKUP_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 DATA_BACKUP_ADMIN_EMAILS = {
@@ -186,310 +209,6 @@ AUTO_REFRESH_TIME = os.getenv("AUTO_REFRESH_TIME", "23:00")
 refresh_tasks: dict[str, dict] = {}
 # Active threads: {wallet: Thread object}
 active_threads: dict[str, threading.Thread] = {}
-
-
-def get_user_data_dir(user_id: int) -> Path:
-    """Get user-specific data directory."""
-    user_dir = DATA_DIR / "users" / str(user_id)
-    user_dir.mkdir(parents=True, exist_ok=True)
-    return user_dir
-
-
-def load_wallet_tags(user_id: int) -> dict:
-    """Load wallet tags/names from user's file."""
-    user_dir = get_user_data_dir(user_id)
-    tags_file = user_dir / "wallet_tags.json"
-    if tags_file.exists():
-        with open(tags_file, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
-
-
-def save_wallet_tags(user_id: int, tags: dict) -> None:
-    """Save wallet tags/names to user's file."""
-    user_dir = get_user_data_dir(user_id)
-    tags_file = user_dir / "wallet_tags.json"
-    with open(tags_file, "w", encoding="utf-8") as f:
-        json.dump(tags, f, indent=2, ensure_ascii=False)
-
-
-def load_refresh_status(user_id: int, cleanup: bool = False, db: Database = None) -> dict:
-    """Load refresh task statuses from user's file.
-
-    Args:
-        user_id: User ID
-        cleanup: If True, remove statuses for wallets user no longer owns
-        db: Database instance (required if cleanup=True)
-    """
-    user_dir = get_user_data_dir(user_id)
-    status_file = user_dir / "refresh_status.json"
-    if status_file.exists():
-        try:
-            with open(status_file, "r", encoding="utf-8") as f:
-                statuses = json.load(f)
-
-            # Cleanup orphaned statuses if requested
-            if cleanup and db:
-                cleaned = {}
-                for wallet, status in statuses.items():
-                    if check_wallet_ownership(db, user_id, wallet):
-                        cleaned[wallet] = status
-                    else:
-                        print(f"[Cleanup] Removing orphaned status for {wallet} (user {user_id})")
-
-                # Save if anything was removed
-                if len(cleaned) < len(statuses):
-                    save_refresh_status(user_id, cleaned)
-                return cleaned
-
-            return statuses
-        except Exception:
-            return {}
-    return {}
-
-
-def save_refresh_status(user_id: int, status_dict: dict) -> None:
-    """Save refresh task statuses to user's file."""
-    user_dir = get_user_data_dir(user_id)
-    status_file = user_dir / "refresh_status.json"
-    with open(status_file, "w", encoding="utf-8") as f:
-        json.dump(status_dict, f, indent=2, ensure_ascii=False)
-
-
-def load_hidden_wallets(user_id: int) -> set:
-    """Load hidden wallet addresses for specific user."""
-    user_dir = get_user_data_dir(user_id)
-    hidden_file = user_dir / "hidden_wallets.json"
-    if hidden_file.exists():
-        try:
-            with open(hidden_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return set(data.get("hidden", []))
-        except Exception:
-            return set()
-    return set()
-
-
-def save_hidden_wallets(user_id: int, hidden: set) -> None:
-    """Save hidden wallet addresses for specific user."""
-    user_dir = get_user_data_dir(user_id)
-    hidden_file = user_dir / "hidden_wallets.json"
-    with open(hidden_file, "w", encoding="utf-8") as f:
-        json.dump({"hidden": list(hidden)}, f, indent=2, ensure_ascii=False)
-
-
-def load_analysis_consents(user_id: int) -> set:
-    """Load wallets with explicit user consent for paid analysis."""
-    user_dir = get_user_data_dir(user_id)
-    consent_file = user_dir / "analysis_consents.json"
-
-    if consent_file.exists():
-        try:
-            with open(consent_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return {w.lower() for w in data.get("wallets", [])}
-        except Exception:
-            return set()
-
-    # Backward compatibility: infer consent from completed/in-progress historical analysis statuses.
-    statuses = load_refresh_status(user_id)
-    inferred = {
-        wallet.lower()
-        for wallet, status in statuses.items()
-        if isinstance(status, dict)
-        and isinstance(wallet, str)
-        and wallet.lower().startswith("0x")
-        and len(wallet) == 42
-        and status.get("status") in ("done", "analyzing", "error")
-    }
-    if inferred:
-        save_analysis_consents(user_id, inferred)
-    return inferred
-
-
-def save_analysis_consents(user_id: int, consents: set) -> None:
-    """Persist wallets with explicit user consent for paid analysis."""
-    user_dir = get_user_data_dir(user_id)
-    consent_file = user_dir / "analysis_consents.json"
-    normalized = sorted({w.lower() for w in consents if w})
-    with open(consent_file, "w", encoding="utf-8") as f:
-        json.dump({"wallets": normalized}, f, indent=2, ensure_ascii=False)
-
-
-def grant_analysis_consent(user_id: int, wallet: str) -> None:
-    """Mark wallet as consented for future bulk/auto analysis."""
-    wallet_lower = wallet.lower()
-    consents = load_analysis_consents(user_id)
-    if wallet_lower in consents:
-        return
-    consents.add(wallet_lower)
-    save_analysis_consents(user_id, consents)
-
-
-def revoke_analysis_consent(user_id: int, wallet: str) -> None:
-    """Revoke previously granted paid-analysis consent for wallet."""
-    wallet_lower = wallet.lower()
-    consents = load_analysis_consents(user_id)
-    if wallet_lower not in consents:
-        return
-    consents.remove(wallet_lower)
-    save_analysis_consents(user_id, consents)
-
-
-def load_user_balance(user_id: int) -> dict:
-    """Load user balance and transaction history."""
-    user_dir = get_user_data_dir(user_id)
-    balance_file = user_dir / "balance.json"
-    if balance_file.exists():
-        try:
-            with open(balance_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {"balance": 0.0, "transactions": []}
-    return {"balance": 0.0, "transactions": []}
-
-
-def save_user_balance(user_id: int, balance_data: dict) -> None:
-    """Save user balance and transaction history."""
-    user_dir = get_user_data_dir(user_id)
-    balance_file = user_dir / "balance.json"
-    with open(balance_file, "w", encoding="utf-8") as f:
-        json.dump(balance_data, f, indent=2, ensure_ascii=False)
-
-
-def ensure_user_balance_initialized(user_id: int, initial_balance: float = 1.0) -> None:
-    """Initialize user balance if not already initialized."""
-    balance_data = load_user_balance(user_id)
-    if not balance_data.get("transactions"):  # New user
-        balance_data["balance"] = initial_balance
-        balance_data["transactions"] = [{
-            "type": "signup_bonus",
-            "amount": initial_balance,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }]
-        save_user_balance(user_id, balance_data)
-
-
-def load_user_payments(user_id: int) -> list:
-    """Load user payments history."""
-    user_dir = get_user_data_dir(user_id)
-    payments_file = user_dir / "payments.json"
-    if payments_file.exists():
-        try:
-            with open(payments_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data if isinstance(data, list) else []
-        except Exception:
-            return []
-    return []
-
-
-def save_user_payments(user_id: int, payments: list) -> None:
-    """Save user payments history."""
-    user_dir = get_user_data_dir(user_id)
-    payments_file = user_dir / "payments.json"
-    with open(payments_file, "w", encoding="utf-8") as f:
-        json.dump(payments, f, indent=2, ensure_ascii=False)
-
-
-def create_user_payment(user_id: int, payment: dict) -> dict:
-    """Create and persist a payment record for user."""
-    payments = load_user_payments(user_id)
-    payment["id"] = f"pay_{int(time.time() * 1000)}_{secrets.token_hex(3)}"
-    payment["createdAt"] = datetime.now(timezone.utc).isoformat()
-    payment["status"] = "PENDING_DEPOSIT"
-    payment["completedAt"] = None
-    payments.append(payment)
-    save_user_payments(user_id, payments)
-    return payment
-
-
-def parse_positive_amount(value) -> float:
-    """Parse positive numeric amount from string/number."""
-    try:
-        parsed = float(str(value))
-    except (TypeError, ValueError):
-        return 0.0
-    return parsed if parsed > 0 else 0.0
-
-
-def apply_payment_credit_if_needed(user_id: int, payment: dict) -> dict:
-    """Credit user balance for successful payment exactly once."""
-    if payment.get("status") != "SUCCESS":
-        return payment
-    if payment.get("balanceCredited") is True:
-        return payment
-
-    payment_id = payment.get("id")
-    if not payment_id:
-        return payment
-
-    balance_data = load_user_balance(user_id)
-    transactions = balance_data.get("transactions", [])
-
-    existing_topup = next(
-        (
-            tx for tx in transactions
-            if tx.get("type") == "payment_topup" and tx.get("payment_id") == payment_id
-        ),
-        None,
-    )
-    if existing_topup:
-        credited_at = existing_topup.get("timestamp") or datetime.now(timezone.utc).isoformat()
-        amount = parse_positive_amount(existing_topup.get("amount"))
-        updated = update_user_payment(user_id, payment_id, {
-            "balanceCredited": True,
-            "balanceCreditedAt": credited_at,
-            "balanceCreditedAmount": amount,
-        })
-        return updated or {**payment, "balanceCredited": True, "balanceCreditedAt": credited_at, "balanceCreditedAmount": amount}
-
-    credit_amount = (
-        parse_positive_amount(payment.get("amountOut"))
-        or parse_positive_amount(payment.get("amount"))
-        or parse_positive_amount(payment.get("originAmount"))
-    )
-    if credit_amount <= 0:
-        return payment
-
-    credit_amount = round(credit_amount, 2)
-    timestamp = datetime.now(timezone.utc).isoformat()
-
-    current_balance = parse_positive_amount(balance_data.get("balance"))
-    balance_data["balance"] = round(current_balance + credit_amount, 2)
-    balance_data.setdefault("transactions", []).append({
-        "type": "payment_topup",
-        "amount": credit_amount,
-        "payment_id": payment_id,
-        "symbol": payment.get("destinationSymbol"),
-        "timestamp": timestamp,
-    })
-    save_user_balance(user_id, balance_data)
-
-    updated = update_user_payment(user_id, payment_id, {
-        "balanceCredited": True,
-        "balanceCreditedAt": timestamp,
-        "balanceCreditedAmount": credit_amount,
-    })
-    return updated or {**payment, "balanceCredited": True, "balanceCreditedAt": timestamp, "balanceCreditedAmount": credit_amount}
-
-
-def get_user_payment(user_id: int, payment_id: str) -> dict | None:
-    """Get payment by ID for specific user."""
-    payments = load_user_payments(user_id)
-    return next((payment for payment in payments if payment.get("id") == payment_id), None)
-
-
-def update_user_payment(user_id: int, payment_id: str, updates: dict) -> dict | None:
-    """Update payment by ID for specific user."""
-    payments = load_user_payments(user_id)
-    for idx, payment in enumerate(payments):
-        if payment.get("id") != payment_id:
-            continue
-        payments[idx].update(updates)
-        save_user_payments(user_id, payments)
-        return payments[idx]
-    return None
 
 
 def check_wallet_ownership(db: Database, user_id: int, wallet_address: str) -> bool:
@@ -527,121 +246,6 @@ def ensure_data_backup_access(current_user: User) -> None:
 def has_running_background_tasks() -> bool:
     """Check if any refresh/analysis thread is currently running."""
     return any(thread and thread.is_alive() for thread in active_threads.values())
-
-
-def create_data_backup_archive() -> Path:
-    """Create ZIP archive with full data folder and return archive path."""
-    DATA_BACKUP_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    archive_path = DATA_BACKUP_ARCHIVE_DIR / f"data_backup_{timestamp}.zip"
-
-    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for item in DATA_DIR.rglob("*"):
-            if item.is_dir():
-                continue
-            if item.resolve() == archive_path.resolve():
-                continue
-            rel_path = item.relative_to(DATA_DIR)
-            arcname = (Path("data") / rel_path).as_posix()
-            archive.write(item, arcname=arcname)
-
-    return archive_path
-
-
-def safe_extract_zip(archive_path: Path, target_dir: Path) -> None:
-    """Safely extract zip archive while preventing path traversal."""
-    target_root = target_dir.resolve()
-    with zipfile.ZipFile(archive_path, "r") as archive:
-        for member in archive.infolist():
-            member_name = member.filename.replace("\\", "/")
-            if not member_name or member_name.endswith("/"):
-                continue
-
-            member_path = Path(member_name)
-            if member_path.is_absolute() or ".." in member_path.parts:
-                raise HTTPException(status_code=400, detail="Archive contains unsafe paths")
-
-            output_path = (target_root / member_path).resolve()
-            if not str(output_path).startswith(str(target_root)):
-                raise HTTPException(status_code=400, detail="Archive contains unsafe paths")
-
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            with archive.open(member, "r") as src, open(output_path, "wb") as dst:
-                shutil.copyfileobj(src, dst)
-
-
-def resolve_data_import_root(extract_root: Path) -> Path:
-    """Detect where imported data files are located inside extracted archive."""
-    direct_data = extract_root / "data"
-    if direct_data.is_dir():
-        return direct_data
-
-    top_level_entries = [
-        entry for entry in extract_root.iterdir()
-        if entry.name != "__MACOSX"
-    ]
-
-    top_level_dirs = [entry for entry in top_level_entries if entry.is_dir()]
-    top_level_files = [entry for entry in top_level_entries if entry.is_file()]
-
-    if len(top_level_dirs) == 1 and not top_level_files:
-        nested_data = top_level_dirs[0] / "data"
-        if nested_data.is_dir():
-            return nested_data
-        return top_level_dirs[0]
-
-    return extract_root
-
-
-def copy_tree(src_dir: Path, dst_dir: Path, skip_top_level_dirs: set[str] | None = None) -> int:
-    """Copy directory tree from src to dst. Returns copied file count."""
-    skip_top_level_dirs = {name.lower() for name in (skip_top_level_dirs or set())}
-    copied_files = 0
-    for src in src_dir.rglob("*"):
-        rel = src.relative_to(src_dir)
-        if rel.parts and rel.parts[0].lower() in skip_top_level_dirs:
-            continue
-        dst = dst_dir / rel
-        if src.is_dir():
-            dst.mkdir(parents=True, exist_ok=True)
-            continue
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
-        copied_files += 1
-    return copied_files
-
-
-def clear_directory(dir_path: Path, keep_names: set[str] | None = None) -> None:
-    """Remove all files/folders inside a directory."""
-    keep_names = {name.lower() for name in (keep_names or set())}
-    if not dir_path.exists():
-        return
-    for child in dir_path.iterdir():
-        if child.name.lower() in keep_names:
-            continue
-        if child.is_dir():
-            shutil.rmtree(child)
-        else:
-            child.unlink()
-
-
-def resolve_backup_archive_path(filename: str) -> Path:
-    """Resolve and validate backup archive path inside data/backups."""
-    raw_name = (filename or "").strip()
-    if not raw_name:
-        raise HTTPException(status_code=400, detail="Filename is required")
-
-    candidate = Path(raw_name)
-    if candidate.name != raw_name or candidate.suffix.lower() != ".zip":
-        raise HTTPException(status_code=400, detail="Invalid backup filename")
-    if ".." in candidate.parts:
-        raise HTTPException(status_code=400, detail="Invalid backup filename")
-
-    archive_path = (DATA_BACKUP_ARCHIVE_DIR / raw_name).resolve()
-    backup_root = DATA_BACKUP_ARCHIVE_DIR.resolve()
-    if not str(archive_path).startswith(str(backup_root)):
-        raise HTTPException(status_code=400, detail="Invalid backup filename")
-    return archive_path
 
 
 def get_wallet_meta(wallet: str) -> dict:
@@ -2546,3 +2150,5 @@ else:
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+

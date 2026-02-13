@@ -6,15 +6,16 @@ import ProfileView from './components/ProfileView'
 import PaymentWidget from './components/PaymentWidget'
 import LoginPage from './components/LoginPage'
 import AdminBackupView from './components/AdminBackupView'
+import ActiveTasksPanel from './components/ActiveTasksPanel'
+import { InsufficientBalanceModal, ProfileCostModal } from './components/CostModals'
 import { apiCall, setAuthToken, getUser, logout } from './utils/api'
+import {
+  hasWalletNewData,
+  initializeWalletViewedState,
+  processViewedReport
+} from './utils/walletViewState'
 
 const RUNNING_TASK_STATUSES = new Set(['fetching', 'analyzing'])
-const KNOWN_TASK_STATUSES = new Set(['cost_estimate', 'fetching', 'analyzing'])
-
-function countSections(markdown) {
-  if (!markdown) return 0
-  return (markdown.match(/^### /gm) || []).length
-}
 
 function App() {
   const MOBILE_BREAKPOINT = 900
@@ -201,105 +202,12 @@ function App() {
   const [oldSectionCount, setOldSectionCount] = useState(null)
   const [updatedSectionIndices, setUpdatedSectionIndices] = useState(new Set())
 
-  // localStorage helpers for tracking viewed reports
-  const getViewedTxCount = useCallback((walletAddr) => {
-    try {
-      const key = `wallet_viewed_${walletAddr.toLowerCase()}`
-      const data = localStorage.getItem(key)
-      return data ? JSON.parse(data).tx_count : 0
-    } catch {
-      return 0
-    }
-  }, [])
-
-  const getViewedState = useCallback((walletAddr) => {
-    try {
-      const key = `wallet_viewed_${walletAddr.toLowerCase()}`
-      const data = localStorage.getItem(key)
-      return data ? JSON.parse(data) : null
-    } catch {
-      return null
-    }
-  }, [])
-
-  const checkHasNewData = useCallback((wallet) => {
-    if (!wallet.has_report) return false
-
-    const viewedState = getViewedState(wallet.address)
-
-    // Never viewed before
-    if (!viewedState) return true
-
-    // Check if tx_count increased
-    const currentTxCount = wallet.tx_count || 0
-    const viewedTxCount = viewedState.tx_count || 0
-    if (currentTxCount > viewedTxCount) return true
-
-    // Check if report was updated after last view (for merged days)
-    if (wallet.last_updated && viewedState.last_viewed) {
-      const reportUpdated = new Date(wallet.last_updated)
-      const lastViewed = new Date(viewedState.last_viewed)
-      if (reportUpdated > lastViewed) return true
-    }
-
-    return false
-  }, [getViewedState])
-
   // Process report data: determine NEW sections, update localStorage, remove green dot
   const processReportData = useCallback((wallet, data) => {
-    const key = `wallet_viewed_${wallet.toLowerCase()}`
-    const oldRaw = localStorage.getItem(key)
-    const oldState = oldRaw ? JSON.parse(oldRaw) : null
-    const oldTxCount = oldState?.tx_count || 0
-    const storedSectionCount = oldState?.section_count
-
-    // Create fingerprints for sections (date + content length)
-    const createFingerprints = (markdown) => {
-      const sections = markdown.match(/### \d{4}-\d{2}-\d{2}[^\n]*/g) || []
-      return sections.map((section, idx) => {
-        const date = section.match(/### (\d{4}-\d{2}-\d{2}(?: — \d{4}-\d{2}-\d{2})?)/)?.[1] || ''
-        const nextSectionIdx = markdown.indexOf('### ', markdown.indexOf(section) + 1)
-        const content = nextSectionIdx > 0
-          ? markdown.slice(markdown.indexOf(section), nextSectionIdx)
-          : markdown.slice(markdown.indexOf(section))
-        return `${date}:${content.length}`
-      })
-    }
-
-    const currentFingerprints = createFingerprints(data.markdown)
-    const oldFingerprints = oldState?.section_fingerprints || []
-
-    // Check if report was updated (new txs OR merged days)
-    const hasNewTxs = data.tx_count > oldTxCount
-    const reportUpdated = data.last_updated && oldState?.last_viewed &&
-      new Date(data.last_updated) > new Date(oldState.last_viewed)
-
-    // Find updated sections (fingerprint changed)
-    const updatedIndices = new Set()
-    if (oldFingerprints.length > 0) {
-      currentFingerprints.forEach((fp, idx) => {
-        if (idx < oldFingerprints.length && fp !== oldFingerprints[idx]) {
-          updatedIndices.add(idx)
-        }
-      })
-    }
-
-    // Show NEW badges if: (new txs OR report updated) AND we have stored section_count
-    if ((hasNewTxs || reportUpdated) && oldState !== null && storedSectionCount !== undefined) {
-      setOldSectionCount(storedSectionCount)
-      setUpdatedSectionIndices(updatedIndices)
-    } else {
-      setOldSectionCount(null)
-      setUpdatedSectionIndices(new Set())
-    }
-
-    // Update localStorage with current state
-    localStorage.setItem(key, JSON.stringify({
-      tx_count: data.tx_count,
-      last_viewed: new Date().toISOString(),
-      section_count: countSections(data.markdown),
-      section_fingerprints: currentFingerprints
-    }))
+    const { oldSectionCount: previousSectionCount, updatedSectionIndices: nextUpdatedSections } =
+      processViewedReport(wallet, data)
+    setOldSectionCount(previousSectionCount)
+    setUpdatedSectionIndices(nextUpdatedSections)
 
     // Remove green dot
     setWallets(prev => prev.map(w =>
@@ -329,22 +237,12 @@ function App() {
       apiCall('/api/active-tasks').then(res => res && res.json())
     ])
       .then(([walletsData, activeTasks]) => {
-        // Initialize localStorage for wallets that don't have it (first time load)
-        walletsData.forEach(w => {
-          const key = `wallet_viewed_${w.address.toLowerCase()}`
-          if (!localStorage.getItem(key) && w.has_report) {
-            // First time - mark as already viewed with current tx_count
-            localStorage.setItem(key, JSON.stringify({
-              tx_count: w.tx_count,
-              last_viewed: new Date().toISOString()
-            }))
-          }
-        })
+        walletsData.forEach(initializeWalletViewedState)
 
         // Enrich wallets with has_new_data flag
         const enrichedWallets = walletsData.map(w => ({
           ...w,
-          has_new_data: checkHasNewData(w)
+          has_new_data: hasWalletNewData(w)
         }))
         setWallets(enrichedWallets)
 
@@ -376,13 +274,13 @@ function App() {
       // Enrich wallets with has_new_data flag
       const enrichedWallets = walletsData.map(w => ({
         ...w,
-        has_new_data: checkHasNewData(w)
+        has_new_data: hasWalletNewData(w)
       }))
       setWallets(enrichedWallets)
     } catch (err) {
       console.error('Failed to refresh wallets:', err)
     }
-  }, [checkHasNewData])
+  }, [])
 
   const saveTag = useCallback(async (wallet, tag) => {
     try {
@@ -1200,94 +1098,13 @@ function App() {
             </div>
           )}
 
-          {/* Active tasks panel */}
           {hasActiveTasks && (
-            <div className="active-tasks-panel">
-              <div className="active-tasks-header">
-                {`Active Tasks (${taskEntries.length})`}
-              </div>
-              <div className="active-tasks-list">
-                {taskEntries.map(([wallet, task]) => (
-                  <div key={wallet} className="active-task-item">
-                    <div className="active-task-wallet">
-                      {getWalletLabel(wallet)}
-                    </div>
-                    <div className="active-task-status">
-                      {task.status === 'cost_estimate' && (
-                        <div className="task-status-cost-estimate">
-                          <div className="cost-estimate-info">
-                            <div className="cost-estimate-row">
-                              <span className="cost-estimate-label">Transactions:</span>
-                              <span className="cost-estimate-value">{Number(task.tx_count || 0).toLocaleString()}</span>
-                            </div>
-                            <div className="cost-estimate-row">
-                              <span className="cost-estimate-label">Cost:</span>
-                              <span className="cost-estimate-value cost-estimate-price">${Number(task.cost_usd || 0).toFixed(2)}</span>
-                            </div>
-                            {task.is_cached && (
-                              <div className="cost-estimate-note">Transactions cached</div>
-                            )}
-                            {task.insufficient_balance && (
-                              <div className="cost-estimate-warning">
-                                Not enough balance: need ${Number(task.required_cost_usd ?? task.cost_usd ?? 0).toFixed(2)}, available ${Number(task.balance_usd ?? 0).toFixed(2)}.
-                              </div>
-                            )}
-                          </div>
-                          <div className="cost-estimate-actions">
-                            <button
-                              className="btn-cost-start"
-                              onClick={() => startAnalysis(wallet)}
-                            >
-                              Start
-                            </button>
-                            <button
-                              className="btn-cost-cancel"
-                              onClick={() => cancelAnalysis(wallet)}
-                            >
-                              Cancel
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                      {task.status === 'fetching' && (
-                        <div className="task-status-fetching">
-                          <span className="task-spinner" aria-hidden="true"></span>
-                          <span className="task-label">Fetching transactions</span>
-                          {task.new_count !== undefined && task.total_count !== undefined && (
-                            <span className="task-detail">
-                              {task.new_count} new, {task.total_count} total
-                            </span>
-                          )}
-                        </div>
-                      )}
-                      {task.status === 'analyzing' && (
-                        <div className="task-status-analyzing">
-                          <span className="task-spinner" aria-hidden="true"></span>
-                          <span className="task-label">AI analysis</span>
-                          {task.percent !== undefined && (
-                            <div className="task-progress">
-                              <div className="task-progress-bar">
-                                <div
-                                  className="task-progress-fill"
-                                  style={{ width: `${task.percent}%` }}
-                                ></div>
-                              </div>
-                              <span className="task-percent">{task.percent}%</span>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      {!KNOWN_TASK_STATUSES.has(task.status) && (
-                        <div className="task-status-unknown">
-                          <span className="task-label">Task in progress</span>
-                          {task.detail && <span className="task-detail">{task.detail}</span>}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <ActiveTasksPanel
+              taskEntries={taskEntries}
+              getWalletLabel={getWalletLabel}
+              onStartAnalysis={startAnalysis}
+              onCancelAnalysis={cancelAnalysis}
+            />
           )}
 
           {error && <div className="error-banner">{error}</div>}
@@ -1329,122 +1146,18 @@ function App() {
         </div>
       </div>
 
-      {insufficientBalanceModal.open && (
-        <div
-          className="modal-overlay insufficient-balance-overlay"
-          onClick={closeInsufficientBalanceModal}
-        >
-          <div
-            className="modal-content insufficient-balance-modal"
-            onClick={(e) => e.stopPropagation()}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="insufficient-balance-title"
-          >
-            <div className="modal-header">
-              <h2 id="insufficient-balance-title">Insufficient Balance</h2>
-              <button
-                className="modal-close"
-                onClick={closeInsufficientBalanceModal}
-                aria-label="Close"
-              >
-                x
-              </button>
-            </div>
-
-            <div className="insufficient-balance-body">
-              <div className="insufficient-balance-detail">{insufficientBalanceModal.detail}</div>
-              {insufficientBalanceModal.wallet && (
-                <div className="insufficient-balance-meta">
-                  <div>
-                    Wallet: {insufficientBalanceModal.wallet.slice(0, 8)}...{insufficientBalanceModal.wallet.slice(-6)}
-                  </div>
-                  <div>
-                    Required: ${Number(insufficientBalanceModal.requiredCostUsd || 0).toFixed(2)}
-                  </div>
-                  <div>
-                    Current balance: ${Number(insufficientBalanceModal.balanceUsd || 0).toFixed(2)}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="insufficient-balance-actions">
-              <button
-                className="btn-cost-cancel"
-                onClick={closeInsufficientBalanceModal}
-              >
-                Close
-              </button>
-              <button
-                className="btn-deposit insufficient-balance-deposit"
-                onClick={openDepositFromInsufficientModal}
-              >
-                Deposit
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {profileCostModal.open && (
-        <div
-          className="modal-overlay profile-cost-overlay"
-          onClick={() => resolveProfileCostModal(false)}
-        >
-          <div
-            className="modal-content profile-cost-modal"
-            onClick={(e) => e.stopPropagation()}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="profile-cost-title"
-          >
-            <div className="modal-header">
-              <h2 id="profile-cost-title">Generate Profile</h2>
-              <button
-                className="modal-close"
-                onClick={() => resolveProfileCostModal(false)}
-                aria-label="Close"
-              >
-                ×
-              </button>
-            </div>
-
-            <div className="profile-cost-body">
-              <div className="profile-cost-value">
-                ${Number(profileCostModal.estimatedCostUsd || 0).toFixed(4)}
-              </div>
-              <div className="profile-cost-label">Will be deducted from your balance</div>
-              <div className="profile-cost-meta">
-                <div>
-                  Wallet: {profileCostModal.wallet.slice(0, 8)}...{profileCostModal.wallet.slice(-6)}
-                </div>
-                <div>Model: {profileCostModal.model}</div>
-              </div>
-            </div>
-
-            <div className="profile-cost-actions">
-              <button
-                className="btn-cost-cancel"
-                onClick={() => resolveProfileCostModal(false)}
-              >
-                Cancel
-              </button>
-              <button
-                className="btn-cost-start profile-cost-confirm"
-                onClick={() => resolveProfileCostModal(true)}
-              >
-                Generate Profile
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <InsufficientBalanceModal
+        modal={insufficientBalanceModal}
+        onClose={closeInsufficientBalanceModal}
+        onDeposit={openDepositFromInsufficientModal}
+      />
+      <ProfileCostModal
+        modal={profileCostModal}
+        onResolve={resolveProfileCostModal}
+      />
 
     </div>
   )
 }
 
 export default App
-
-
