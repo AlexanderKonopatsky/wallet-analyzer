@@ -1024,19 +1024,33 @@ function App() {
     }
   }, [startMonitoring])
 
-  const cancelAnalysis = useCallback((wallet) => {
-    // Remove cost estimate task and deselect wallet
+  const cancelAnalysis = useCallback(async (wallet) => {
+    if (!wallet) return
     const walletLower = wallet.toLowerCase()
-    setActiveTasks(prev => {
-      const newTasks = { ...prev }
-      delete newTasks[walletLower]
-      return newTasks
-    })
-    insufficientBalanceNotifiedRef.current.delete(walletLower)
-    setInsufficientBalanceModal(prev =>
-      prev.wallet === walletLower ? { ...prev, open: false } : prev
-    )
-    setSelectedWallet('')
+    setError(null)
+
+    try {
+      const res = await apiCall(`/api/cancel-analysis/${wallet}`, { method: 'POST' })
+      if (!res) return
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.detail || 'Failed to cancel analysis')
+      }
+
+      // Remove task locally after backend confirms cancellation persisted.
+      setActiveTasks(prev => {
+        const newTasks = { ...prev }
+        delete newTasks[walletLower]
+        return newTasks
+      })
+      insufficientBalanceNotifiedRef.current.delete(walletLower)
+      setInsufficientBalanceModal(prev =>
+        prev.wallet === walletLower ? { ...prev, open: false } : prev
+      )
+      setSelectedWallet('')
+    } catch (err) {
+      setError(err.message || 'Failed to cancel analysis')
+    }
   }, [])
 
   const startRefresh = useCallback(async (wallet) => {

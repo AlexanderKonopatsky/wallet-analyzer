@@ -332,6 +332,16 @@ def grant_analysis_consent(user_id: int, wallet: str) -> None:
     save_analysis_consents(user_id, consents)
 
 
+def revoke_analysis_consent(user_id: int, wallet: str) -> None:
+    """Revoke previously granted paid-analysis consent for wallet."""
+    wallet_lower = wallet.lower()
+    consents = load_analysis_consents(user_id)
+    if wallet_lower not in consents:
+        return
+    consents.remove(wallet_lower)
+    save_analysis_consents(user_id, consents)
+
+
 def load_user_balance(user_id: int) -> dict:
     """Load user balance and transaction history."""
     user_dir = get_user_data_dir(user_id)
@@ -2677,6 +2687,34 @@ def start_analysis(
     active_threads[wallet_lower] = thread
 
     return {"status": "started"}
+
+
+@app.post("/api/cancel-analysis/{wallet}")
+def cancel_analysis(
+    wallet: str,
+    current_user: User = Depends(get_current_user),
+    db: Database = Depends(get_db)
+):
+    """Cancel pending analysis task and remove it from user's persisted task list."""
+    wallet_lower = wallet.lower()
+
+    # Check ownership
+    if not check_wallet_ownership(db, current_user.id, wallet_lower):
+        raise HTTPException(status_code=403, detail="Wallet not found in your list")
+
+    user_refresh_tasks = load_refresh_status(current_user.id)
+    removed = wallet_lower in user_refresh_tasks
+    if removed:
+        user_refresh_tasks.pop(wallet_lower, None)
+        save_refresh_status(current_user.id, user_refresh_tasks)
+
+    # Remove in-memory task mirror so /api/active-tasks won't re-surface it.
+    refresh_tasks.pop(wallet_lower, None)
+
+    # If user explicitly cancels, do not keep auto-analysis consent for this wallet.
+    revoke_analysis_consent(current_user.id, wallet_lower)
+
+    return {"status": "cancelled", "wallet": wallet_lower, "removed": removed}
 
 
 @app.post("/api/refresh-bulk")
