@@ -120,6 +120,124 @@ function RelatedCard({ rw, mainWallet, classificationOverride, classifyingNow })
   )
 }
 
+function AdminBackupView({
+  backups,
+  loading,
+  accessDenied,
+  hasRunningTasks,
+  backupBusy,
+  importBusy,
+  downloadingFilename,
+  deletingFilename,
+  onRefresh,
+  onDownload,
+  onImportClick,
+  onDownloadArchive,
+  onDelete,
+}) {
+  const formatBytes = (bytes) => {
+    const num = Number(bytes || 0)
+    if (num >= 1024 * 1024 * 1024) return `${(num / (1024 * 1024 * 1024)).toFixed(2)} GB`
+    if (num >= 1024 * 1024) return `${(num / (1024 * 1024)).toFixed(2)} MB`
+    if (num >= 1024) return `${(num / 1024).toFixed(1)} KB`
+    return `${num} B`
+  }
+
+  const formatDate = (iso) => {
+    if (!iso) return '-'
+    try {
+      return new Date(iso).toLocaleString()
+    } catch {
+      return iso
+    }
+  }
+
+  return (
+    <div className="backup-admin-view">
+      <div className="backup-admin-header">
+        <h2>Admin Backup</h2>
+        <div className="backup-admin-actions">
+          <button
+            className="btn btn-refresh"
+            onClick={onRefresh}
+            disabled={loading || backupBusy || importBusy}
+          >
+            Refresh
+          </button>
+          <button
+            className="btn btn-refresh"
+            onClick={onDownload}
+            disabled={loading || backupBusy || importBusy || hasRunningTasks || accessDenied}
+          >
+            {backupBusy ? 'Creating backup...' : 'Create & Download Backup'}
+          </button>
+          <button
+            className="btn btn-refresh"
+            onClick={onImportClick}
+            disabled={loading || backupBusy || importBusy || hasRunningTasks || accessDenied}
+          >
+            {importBusy ? 'Importing...' : 'Import ZIP'}
+          </button>
+        </div>
+      </div>
+
+      <div className="backup-admin-note">
+        {hasRunningTasks
+          ? 'Backup/import is disabled while refresh or analysis tasks are running.'
+          : 'Full backup and restore of server data folder.'}
+      </div>
+
+      {accessDenied ? (
+        <div className="backup-admin-empty">Access denied for backup management.</div>
+      ) : loading ? (
+        <div className="backup-admin-empty">Loading backups...</div>
+      ) : backups.length === 0 ? (
+        <div className="backup-admin-empty">No backup archives yet.</div>
+      ) : (
+        <div className="backup-table-wrap">
+          <table className="backup-table">
+            <thead>
+              <tr>
+                <th>File</th>
+                <th>Size</th>
+                <th>Updated</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {backups.map((item) => (
+                <tr key={item.filename}>
+                  <td className="backup-file">{item.filename}</td>
+                  <td>{formatBytes(item.size_bytes)}</td>
+                  <td>{formatDate(item.updated_at)}</td>
+                  <td>
+                    <div className="backup-row-actions">
+                      <button
+                        className="btn-backup-download"
+                        onClick={() => onDownloadArchive(item.filename)}
+                        disabled={Boolean(downloadingFilename) || Boolean(deletingFilename) || backupBusy || importBusy}
+                      >
+                        {downloadingFilename === item.filename ? 'Downloading...' : 'Download'}
+                      </button>
+                      <button
+                        className="btn-backup-delete"
+                        onClick={() => onDelete(item.filename)}
+                        disabled={Boolean(downloadingFilename) || Boolean(deletingFilename) || backupBusy || importBusy}
+                      >
+                        {deletingFilename === item.filename ? 'Deleting...' : 'Delete'}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function App() {
   const MOBILE_BREAKPOINT = 900
 
@@ -137,6 +255,11 @@ function App() {
   const [balance, setBalance] = useState(0)
   const [backupBusy, setBackupBusy] = useState(false)
   const [importBusy, setImportBusy] = useState(false)
+  const [backups, setBackups] = useState([])
+  const [backupsLoading, setBackupsLoading] = useState(false)
+  const [backupAccessDenied, setBackupAccessDenied] = useState(false)
+  const [downloadingBackupFilename, setDownloadingBackupFilename] = useState('')
+  const [deletingBackupFilename, setDeletingBackupFilename] = useState('')
   const [isMobileLayout, setIsMobileLayout] = useState(() => {
     if (typeof window === 'undefined') return false
     return window.innerWidth <= MOBILE_BREAKPOINT
@@ -147,7 +270,7 @@ function App() {
   const importInputRef = useRef(null)
 
   // Profile
-  const [activeView, setActiveView] = useState('report') // 'report' | 'profile' | 'portfolio' | 'payment'
+  const [activeView, setActiveView] = useState('report') // 'report' | 'profile' | 'portfolio' | 'payment' | 'admin-backup'
   const [profile, setProfile] = useState(null)
   const [profileLoading, setProfileLoading] = useState(false)
   const [profileCostModal, setProfileCostModal] = useState({
@@ -755,6 +878,38 @@ function App() {
     }
   }, [])
 
+  const loadBackupHistory = useCallback(async () => {
+    setBackupsLoading(true)
+    setError(null)
+    try {
+      const res = await apiCall('/api/admin/data-backups')
+      if (!res) return
+
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}))
+        if (res.status === 403) {
+          setBackupAccessDenied(true)
+          setBackups([])
+          return
+        }
+        throw new Error(payload.detail || 'Failed to load backup history')
+      }
+
+      const payload = await res.json().catch(() => ({}))
+      setBackupAccessDenied(false)
+      setBackups(Array.isArray(payload.backups) ? payload.backups : [])
+    } catch (err) {
+      setError(err.message || 'Failed to load backup history')
+    } finally {
+      setBackupsLoading(false)
+    }
+  }, [])
+
+  const openBackupAdminView = useCallback(async () => {
+    setActiveView('admin-backup')
+    await loadBackupHistory()
+  }, [loadBackupHistory])
+
   const downloadDataBackup = useCallback(async () => {
     setError(null)
     setBackupBusy(true)
@@ -782,12 +937,13 @@ function App() {
       link.click()
       link.remove()
       window.URL.revokeObjectURL(url)
+      await loadBackupHistory()
     } catch (err) {
       setError(err.message || 'Failed to create data backup')
     } finally {
       setBackupBusy(false)
     }
-  }, [])
+  }, [loadBackupHistory])
 
   const openDataImportPicker = useCallback(() => {
     if (!importInputRef.current) return
@@ -831,16 +987,80 @@ function App() {
       setReport(null)
       setProfile(null)
       setPortfolio(null)
-      setActiveView('report')
+      setBackups([])
+      setActiveView('admin-backup')
       await refreshWallets()
       await refreshBalance()
+      await loadBackupHistory()
       window.alert(`Data import completed: ${payload.imported_files ?? 0} files restored`)
     } catch (err) {
       setError(err.message || 'Failed to import data backup')
     } finally {
       setImportBusy(false)
     }
-  }, [refreshBalance, refreshWallets])
+  }, [loadBackupHistory, refreshBalance, refreshWallets])
+
+  const downloadBackupArchive = useCallback(async (filename) => {
+    if (!filename) return
+    setDownloadingBackupFilename(filename)
+    setError(null)
+
+    try {
+      const encoded = encodeURIComponent(filename)
+      const res = await apiCall(`/api/admin/data-backups/${encoded}`)
+      if (!res) return
+
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}))
+        throw new Error(payload.detail || 'Failed to download backup archive')
+      }
+
+      const blob = await res.blob()
+      const contentDisposition = res.headers.get('content-disposition') || ''
+      const filenameMatch = contentDisposition.match(/filename=\"?([^\";]+)\"?/i)
+      const outFilename = filenameMatch?.[1] || filename
+
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = outFilename
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.URL.revokeObjectURL(url)
+    } catch (err) {
+      setError(err.message || 'Failed to download backup archive')
+    } finally {
+      setDownloadingBackupFilename('')
+    }
+  }, [])
+
+  const deleteBackupArchive = useCallback(async (filename) => {
+    if (!filename) return
+    const confirmed = window.confirm(`Delete backup ${filename}?`)
+    if (!confirmed) return
+
+    setDeletingBackupFilename(filename)
+    setError(null)
+    try {
+      const encoded = encodeURIComponent(filename)
+      const res = await apiCall(`/api/admin/data-backups/${encoded}`, {
+        method: 'DELETE'
+      })
+      if (!res) return
+
+      const payload = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(payload.detail || 'Failed to delete backup archive')
+      }
+
+      await loadBackupHistory()
+    } catch (err) {
+      setError(err.message || 'Failed to delete backup archive')
+    } finally {
+      setDeletingBackupFilename('')
+    }
+  }, [loadBackupHistory])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -1231,20 +1451,12 @@ function App() {
             Deposit
           </button>
           <button
-            onClick={downloadDataBackup}
-            className="btn-admin"
-            disabled={backupBusy || importBusy || hasRunningTasks}
-            title={hasRunningTasks ? 'Stop active tasks before backup/import' : 'Download full data backup'}
+            onClick={openBackupAdminView}
+            className={`btn-admin ${activeView === 'admin-backup' ? 'btn-admin-active' : ''}`}
+            disabled={backupBusy || importBusy}
+            title="Open backup management"
           >
-            {backupBusy ? 'Backing up...' : 'Backup'}
-          </button>
-          <button
-            onClick={openDataImportPicker}
-            className="btn-admin"
-            disabled={backupBusy || importBusy || hasRunningTasks}
-            title={hasRunningTasks ? 'Stop active tasks before backup/import' : 'Import data backup (.zip)'}
-          >
-            {importBusy ? 'Importing...' : 'Import'}
+            Backups
           </button>
           <button
             onClick={handleLogout}
@@ -1308,7 +1520,7 @@ function App() {
         )}
 
         <div className="app-content">
-          {selectedWallet && activeView !== 'payment' && (
+          {selectedWallet && (activeView === 'report' || activeView === 'profile' || activeView === 'portfolio') && (
             <div className="wallet-toolbar">
               <button
                 className="btn btn-refresh"
@@ -1418,6 +1630,22 @@ function App() {
 
           {activeView === 'payment' ? (
             <PaymentWidget onPaymentSuccess={refreshBalance} />
+          ) : activeView === 'admin-backup' ? (
+            <AdminBackupView
+              backups={backups}
+              loading={backupsLoading}
+              accessDenied={backupAccessDenied}
+              hasRunningTasks={hasRunningTasks}
+              backupBusy={backupBusy}
+              importBusy={importBusy}
+              downloadingFilename={downloadingBackupFilename}
+              deletingFilename={deletingBackupFilename}
+              onRefresh={loadBackupHistory}
+              onDownload={downloadDataBackup}
+              onImportClick={openDataImportPicker}
+              onDownloadArchive={downloadBackupArchive}
+              onDelete={deleteBackupArchive}
+            />
           ) : activeView === 'portfolio' ? (
             <PortfolioView
               portfolio={portfolio}

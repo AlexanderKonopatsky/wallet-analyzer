@@ -862,11 +862,14 @@ def resolve_data_import_root(extract_root: Path) -> Path:
     return extract_root
 
 
-def copy_tree(src_dir: Path, dst_dir: Path) -> int:
+def copy_tree(src_dir: Path, dst_dir: Path, skip_top_level_dirs: set[str] | None = None) -> int:
     """Copy directory tree from src to dst. Returns copied file count."""
+    skip_top_level_dirs = {name.lower() for name in (skip_top_level_dirs or set())}
     copied_files = 0
     for src in src_dir.rglob("*"):
         rel = src.relative_to(src_dir)
+        if rel.parts and rel.parts[0].lower() in skip_top_level_dirs:
+            continue
         dst = dst_dir / rel
         if src.is_dir():
             dst.mkdir(parents=True, exist_ok=True)
@@ -877,15 +880,37 @@ def copy_tree(src_dir: Path, dst_dir: Path) -> int:
     return copied_files
 
 
-def clear_directory(dir_path: Path) -> None:
+def clear_directory(dir_path: Path, keep_names: set[str] | None = None) -> None:
     """Remove all files/folders inside a directory."""
+    keep_names = {name.lower() for name in (keep_names or set())}
     if not dir_path.exists():
         return
     for child in dir_path.iterdir():
+        if child.name.lower() in keep_names:
+            continue
         if child.is_dir():
             shutil.rmtree(child)
         else:
             child.unlink()
+
+
+def resolve_backup_archive_path(filename: str) -> Path:
+    """Resolve and validate backup archive path inside data/backups."""
+    raw_name = (filename or "").strip()
+    if not raw_name:
+        raise HTTPException(status_code=400, detail="Filename is required")
+
+    candidate = Path(raw_name)
+    if candidate.name != raw_name or candidate.suffix.lower() != ".zip":
+        raise HTTPException(status_code=400, detail="Invalid backup filename")
+    if ".." in candidate.parts:
+        raise HTTPException(status_code=400, detail="Invalid backup filename")
+
+    archive_path = (DATA_BACKUP_ARCHIVE_DIR / raw_name).resolve()
+    backup_root = DATA_BACKUP_ARCHIVE_DIR.resolve()
+    if not str(archive_path).startswith(str(backup_root)):
+        raise HTTPException(status_code=400, detail="Invalid backup filename")
+    return archive_path
 
 
 def get_wallet_meta(wallet: str) -> dict:
@@ -1390,6 +1415,70 @@ def download_data_backup(current_user: User = Depends(get_current_user)):
     )
 
 
+@app.get("/api/admin/data-backups")
+def list_data_backups(current_user: User = Depends(get_current_user)):
+    """List existing backup archives in data/backups."""
+    ensure_data_backup_access(current_user)
+
+    if not data_backup_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Backup/import is already in progress")
+
+    try:
+        DATA_BACKUP_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+        backups = []
+        for archive in DATA_BACKUP_ARCHIVE_DIR.glob("*.zip"):
+            stat = archive.stat()
+            backups.append({
+                "filename": archive.name,
+                "size_bytes": stat.st_size,
+                "created_at": datetime.fromtimestamp(stat.st_ctime, tz=timezone.utc).isoformat(),
+                "updated_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+            })
+        backups.sort(key=lambda item: item["updated_at"], reverse=True)
+        return {"backups": backups}
+    finally:
+        data_backup_lock.release()
+
+
+@app.get("/api/admin/data-backups/{filename}")
+def download_existing_data_backup(filename: str, current_user: User = Depends(get_current_user)):
+    """Download an existing backup archive from data/backups."""
+    ensure_data_backup_access(current_user)
+
+    if not data_backup_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Backup/import is already in progress")
+
+    try:
+        archive_path = resolve_backup_archive_path(filename)
+        if not archive_path.exists() or not archive_path.is_file():
+            raise HTTPException(status_code=404, detail="Backup archive not found")
+        return FileResponse(
+            path=str(archive_path),
+            media_type="application/zip",
+            filename=archive_path.name,
+        )
+    finally:
+        data_backup_lock.release()
+
+
+@app.delete("/api/admin/data-backups/{filename}")
+def delete_data_backup(filename: str, current_user: User = Depends(get_current_user)):
+    """Delete a backup archive from data/backups."""
+    ensure_data_backup_access(current_user)
+
+    if not data_backup_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Backup/import is already in progress")
+
+    try:
+        archive_path = resolve_backup_archive_path(filename)
+        if not archive_path.exists() or not archive_path.is_file():
+            raise HTTPException(status_code=404, detail="Backup archive not found")
+        archive_path.unlink()
+        return {"status": "deleted", "filename": archive_path.name}
+    finally:
+        data_backup_lock.release()
+
+
 @app.post("/api/admin/data-import")
 async def import_data_backup(
     request: Request,
@@ -1448,10 +1537,12 @@ async def import_data_backup(
 
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             if normalized_mode == "replace":
-                clear_directory(DATA_DIR)
+                # Keep local backup history on server during restore.
+                clear_directory(DATA_DIR, keep_names={"backups"})
                 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-            copied_files = copy_tree(import_root, DATA_DIR)
+            # Do not overwrite local backup archive store from imported snapshot.
+            copied_files = copy_tree(import_root, DATA_DIR, skip_top_level_dirs={"backups"})
 
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
         DATA_BACKUP_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)

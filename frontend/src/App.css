@@ -151,6 +151,11 @@
   cursor: not-allowed;
 }
 
+.btn-admin-active {
+  background: #30363d;
+  border-color: #484f58;
+}
+
 .mobile-drawer-control {
   display: none;
 }
@@ -472,6 +477,121 @@
   margin-bottom: 16px;
   color: #f85149;
   font-size: 0.875rem;
+}
+
+.backup-admin-view {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.backup-admin-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.backup-admin-header h2 {
+  margin: 0;
+  color: #e6edf3;
+  font-size: 1.05rem;
+}
+
+.backup-admin-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.backup-admin-note {
+  color: #8b949e;
+  font-size: 0.82rem;
+  margin-bottom: 14px;
+}
+
+.backup-admin-empty {
+  padding: 18px 10px;
+  color: #8b949e;
+  text-align: center;
+  border: 1px dashed #30363d;
+  border-radius: 8px;
+  background: #0d1117;
+}
+
+.backup-table-wrap {
+  overflow-x: auto;
+}
+
+.backup-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 520px;
+}
+
+.backup-table th,
+.backup-table td {
+  padding: 10px 8px;
+  border-bottom: 1px solid #21262d;
+  font-size: 0.82rem;
+  color: #c9d1d9;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.backup-table th {
+  color: #8b949e;
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.backup-file {
+  font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+  color: #58a6ff !important;
+}
+
+.backup-row-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.btn-backup-download,
+.btn-backup-delete {
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 0.76rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.btn-backup-download {
+  color: #58a6ff;
+}
+
+.btn-backup-delete {
+  color: #f85149;
+}
+
+.btn-backup-download:hover:not(:disabled) {
+  background: #17263a;
+  border-color: #58a6ff;
+}
+
+.btn-backup-delete:hover:not(:disabled) {
+  background: #2d161a;
+  border-color: #f85149;
+}
+
+.btn-backup-download:disabled,
+.btn-backup-delete:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 /* Profile view */
@@ -1183,6 +1303,19 @@
 
   .cost-estimate-actions {
     margin-left: 0;
+    width: 100%;
+  }
+
+  .backup-admin-view {
+    padding: 12px;
+  }
+
+  .backup-admin-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .backup-admin-actions .btn {
     width: 100%;
   }
 }
