@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -13,6 +15,27 @@ from db import Database, User, get_db
 from user_data_store import ensure_user_balance_initialized
 
 router = APIRouter()
+
+DATA_BACKUP_ADMIN_EMAILS = {
+    email.strip().lower()
+    for email in os.getenv("DATA_BACKUP_ADMIN_EMAILS", "").split(",")
+    if email.strip()
+}
+
+
+def can_manage_data_backup(email: str) -> bool:
+    """Check whether user can access backup/import management."""
+    if not DATA_BACKUP_ADMIN_EMAILS:
+        return True
+    return email.lower() in DATA_BACKUP_ADMIN_EMAILS
+
+
+def build_auth_user_payload(user: User) -> dict:
+    return {
+        "id": user.id,
+        "email": user.email,
+        "can_manage_data_backup": can_manage_data_backup(user.email),
+    }
 
 
 class RequestCodeRequest(BaseModel):
@@ -68,10 +91,7 @@ async def verify_code_endpoint(body: VerifyCodeRequest, db: Database = Depends(g
 
     return {
         "token": token,
-        "user": {
-            "id": user.id,
-            "email": user.email,
-        },
+        "user": build_auth_user_payload(user),
     }
 
 
@@ -89,17 +109,11 @@ async def google_auth(body: GoogleAuthRequest, db: Database = Depends(get_db)):
     token = create_jwt_token(user.id)
     return {
         "token": token,
-        "user": {
-            "id": user.id,
-            "email": user.email,
-        },
+        "user": build_auth_user_payload(user),
     }
 
 
 @router.get("/api/auth/me")
 async def get_me(current_user: User = Depends(get_current_user)):
     """Get current user info."""
-    return {
-        "id": current_user.id,
-        "email": current_user.email,
-    }
+    return build_auth_user_payload(current_user)

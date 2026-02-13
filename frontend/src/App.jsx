@@ -431,9 +431,10 @@ function App() {
   }, [])
 
   const openBackupAdminView = useCallback(async () => {
+    if (!user?.can_manage_data_backup) return
     setActiveView('admin-backup')
     await loadBackupHistory()
-  }, [loadBackupHistory])
+  }, [loadBackupHistory, user?.can_manage_data_backup])
 
   const downloadDataBackup = useCallback(async () => {
     setError(null)
@@ -954,6 +955,7 @@ function App() {
   const taskEntries = Object.entries(activeTasks).filter(([, task]) =>
     task && typeof task === 'object'
   )
+  const canManageDataBackup = Boolean(user?.can_manage_data_backup)
   const hasRunningTasks = taskEntries.some(([, task]) =>
     RUNNING_TASK_STATUSES.has(task.status)
   )
@@ -1022,14 +1024,16 @@ function App() {
           >
             Deposit
           </button>
-          <button
-            onClick={openBackupAdminView}
-            className={`btn-admin ${activeView === 'admin-backup' ? 'btn-admin-active' : ''}`}
-            disabled={backupBusy || importBusy}
-            title="Open backup management"
-          >
-            Backups
-          </button>
+          {canManageDataBackup && (
+            <button
+              onClick={openBackupAdminView}
+              className={`btn-admin ${activeView === 'admin-backup' ? 'btn-admin-active' : ''}`}
+              disabled={backupBusy || importBusy}
+              title="Open backup management"
+            >
+              Backups
+            </button>
+          )}
           <button
             onClick={handleLogout}
             className={`btn-logout ${isMobileLayout ? 'btn-logout-icon' : ''}`}
@@ -1117,7 +1121,7 @@ function App() {
 
           {activeView === 'payment' ? (
             <PaymentWidget onPaymentSuccess={refreshBalance} />
-          ) : activeView === 'admin-backup' ? (
+          ) : activeView === 'admin-backup' && canManageDataBackup ? (
             <AdminBackupView
               backups={backups}
               loading={backupsLoading}
