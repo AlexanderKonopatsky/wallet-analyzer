@@ -407,6 +407,11 @@
   color: #f85149;
 }
 
+.wallet-card.editing .wallet-card-remove {
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* Wallet category indicator */
 .wallet-card-category-indicator {
   position: absolute;
