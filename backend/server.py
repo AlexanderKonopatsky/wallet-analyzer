@@ -61,7 +61,6 @@ from analyze import (
     FULL_CHRONOLOGY_COUNT,
     merge_chronology_parts,
 )
-from portfolio import analyze_portfolio, load_cached_portfolio, is_cache_valid
 from categories import (
     get_all_categories,
     get_category_by_id,
@@ -2208,56 +2207,6 @@ def generate_profile(
         json.dump(profile_data, f, indent=2, ensure_ascii=False)
 
     return profile_data
-
-
-# в”Ђв”Ђ Portfolio Analysis в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-
-
-@app.get("/api/portfolio/{wallet}")
-def get_portfolio(
-    wallet: str,
-    current_user: User = Depends(get_current_user),
-    db: Database = Depends(get_db)
-):
-    """Get portfolio analysis for a wallet. Data is shared globally (cached). Returns cached if valid."""
-    wallet = wallet.lower()
-
-    # Security: only allow viewing if user owns wallet
-    if not check_wallet_ownership(db, current_user.id, wallet):
-        raise HTTPException(status_code=403, detail="Wallet not found in your list")
-
-    filepath = DATA_DIR / f"{wallet}.json"
-
-    # If transaction data doesn't exist, return 404
-    if not filepath.exists():
-        raise HTTPException(status_code=404, detail="No transaction data found")
-
-    if is_cache_valid(wallet):
-        cached = load_cached_portfolio(wallet)
-        if cached:
-            return cached
-
-    return analyze_portfolio(wallet)
-
-
-@app.post("/api/portfolio/{wallet}/refresh")
-def refresh_portfolio(
-    wallet: str,
-    current_user: User = Depends(get_current_user),
-    db: Database = Depends(get_db)
-):
-    """Force recompute portfolio analysis (user must own wallet)."""
-    wallet = wallet.lower()
-
-    # Check ownership
-    if not check_wallet_ownership(db, current_user.id, wallet):
-        raise HTTPException(status_code=403, detail="Wallet not found in your list")
-
-    filepath = DATA_DIR / f"{wallet}.json"
-    if not filepath.exists():
-        raise HTTPException(status_code=404, detail="No transaction data found")
-
-    return analyze_portfolio(wallet)
 
 
 def auto_refresh_all_wallets() -> None:

@@ -3,7 +3,6 @@ import './App.css'
 import WalletSidebar from './components/WalletSidebar'
 import ReportView from './components/ReportView'
 import ProfileView from './components/ProfileView'
-import PortfolioView from './components/PortfolioView'
 import PaymentWidget from './components/PaymentWidget'
 import LoginPage from './components/LoginPage'
 import { apiCall, setAuthToken, getUser, logout } from './utils/api'
@@ -166,7 +165,7 @@ function App() {
   const importInputRef = useRef(null)
 
   // Profile
-  const [activeView, setActiveView] = useState('report') // 'report' | 'profile' | 'portfolio' | 'payment' | 'admin-backup'
+  const [activeView, setActiveView] = useState('report') // 'report' | 'profile' | 'payment' | 'admin-backup'
   const [profile, setProfile] = useState(null)
   const [profileLoading, setProfileLoading] = useState(false)
   const [profileCostModal, setProfileCostModal] = useState({
@@ -184,10 +183,6 @@ function App() {
     detail: ''
   })
   const insufficientBalanceNotifiedRef = useRef(new Set())
-
-  // Portfolio
-  const [portfolio, setPortfolio] = useState(null)
-  const [portfolioLoading, setPortfolioLoading] = useState(false)
 
   // Check auth on mount
   useEffect(() => {
@@ -608,27 +603,6 @@ function App() {
     }
   }, [requestProfileCostConfirmation])
 
-  const loadPortfolio = useCallback(async (wallet, forceRefresh = false) => {
-    if (!wallet) return
-    setPortfolioLoading(true)
-    setError(null)
-    setActiveView('portfolio')
-    try {
-      const url = forceRefresh
-        ? `/api/portfolio/${wallet.toLowerCase()}/refresh`
-        : `/api/portfolio/${wallet.toLowerCase()}`
-      const opts = forceRefresh ? { method: 'POST' } : {}
-      const res = await apiCall(url, opts)
-      if (!res || !res.ok) throw new Error('Failed to load portfolio')
-      setPortfolio(await res.json())
-    } catch (err) {
-      setError(err.message)
-      setPortfolio(null)
-    } finally {
-      setPortfolioLoading(false)
-    }
-  }, [])
-
   // Refresh balance
   const refreshBalance = useCallback(async () => {
     try {
@@ -750,7 +724,6 @@ function App() {
       setSelectedWallet('')
       setReport(null)
       setProfile(null)
-      setPortfolio(null)
       setBackups([])
       setActiveView('admin-backup')
       await refreshWallets()
@@ -1129,7 +1102,6 @@ function App() {
     setError(null)
     setActiveView('report')
     setProfile(null)
-    setPortfolio(null)
     setOldSectionCount(null)
 
     if (wallet) {
@@ -1222,8 +1194,6 @@ function App() {
         }
         if (actionId === 'profile') {
           loadProfile(wallet)
-        } else if (actionId === 'analysis') {
-          loadPortfolio(wallet)
         } else if (actionId === 'report') {
           setActiveView('report')
           setProfile(null)
@@ -1335,7 +1305,7 @@ function App() {
         )}
 
         <div className="app-content">
-          {selectedWallet && (activeView === 'report' || activeView === 'profile' || activeView === 'portfolio') && (
+          {selectedWallet && (activeView === 'report' || activeView === 'profile') && (
             <div className="wallet-toolbar">
               <button
                 className="btn btn-refresh"
@@ -1456,12 +1426,6 @@ function App() {
               onImportClick={openDataImportPicker}
               onDownloadArchive={downloadBackupArchive}
               onDelete={deleteBackupArchive}
-            />
-          ) : activeView === 'portfolio' ? (
-            <PortfolioView
-              portfolio={portfolio}
-              loading={portfolioLoading}
-              onRefresh={() => loadPortfolio(selectedWallet, true)}
             />
           ) : activeView === 'profile' ? (
             <ProfileView

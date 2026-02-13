@@ -1,4 +1,4 @@
-﻿# Backend (Python FastAPI)
+# Backend (Python FastAPI)
 
 Backend logic for fetching transactions, AI analysis, and REST API.
 
@@ -8,7 +8,6 @@ Backend logic for fetching transactions, AI analysis, and REST API.
 main.py          # Cielo Finance API client (fetch transactions)
 analyze.py       # AI analysis engine (Gemini via OpenRouter)
 categories.py    # Wallet classification (LLM-based)
-portfolio.py     # Portfolio statistics aggregation
 server.py        # FastAPI REST API + background tasks
 ```
 
@@ -123,17 +122,6 @@ See `data/CLAUDE.md` for categories.json format.
 - `personal` вЂ” personal wallet (not excluded)
 - `unknown` вЂ” classification failed
 
-
-### portfolio.py вЂ” Portfolio Aggregation
-**Purpose**: Aggregate statistics by tokens, protocols, chains.
-
-**Key Functions**:
-- `generate_portfolio(wallet_address)` вЂ” generate statistics
-  - Reads `data/{wallet}.json`
-  - Aggregates by tokens, protocols, dates
-  - Saves to `reports/{wallet}_portfolio.json`
-
-**Output**: see `reports/CLAUDE.md` (Portfolio Files)
 
 ### server.py вЂ” FastAPI Server
 **Purpose**: REST API + background refresh tasks.

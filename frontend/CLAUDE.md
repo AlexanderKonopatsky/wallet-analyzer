@@ -1,4 +1,4 @@
-﻿# Frontend (React + Vite)
+# Frontend (React + Vite)
 
 React 19 application with Vite 7 for visualizing cryptocurrency wallet analysis.
 
@@ -21,8 +21,6 @@ src/
     в”њв”Ђв”Ђ ReportView.jsx        # Markdown report display
     в”њв”Ђв”Ђ ReportView.css
     в”њв”Ђв”Ђ ProfileView.jsx       # Wallet profile (AI-generated)
-    в”њв”Ђв”Ђ PortfolioView.jsx     # Aggregated statistics
-    в””в”Ђв”Ђ PortfolioView.css
 ```
 
 ## Components
@@ -30,7 +28,7 @@ src/
 ### App.jsx
 **Responsibilities**:
 - Manage selected wallet (`selectedWallet` state)
-- Switch tabs: Report / Profile / Portfolio / Related
+- Switch tabs: Report / Profile / Related
 - Load wallet list (`/api/wallets`)
 - Pass data to child components
 
@@ -115,16 +113,6 @@ const [activeTab, setActiveTab] = useState('report')       // Current tab
 **API Endpoints Used**:
 - `GET /api/profile/{wallet}` вЂ” get profile (if implemented)
 - Or load directly from `reports/` (static file)
-
-### PortfolioView.jsx
-**Responsibilities**:
-- Aggregated statistics by tokens, protocols, chains
-- Charts and activity tables
-
-**Data Source**: `reports/{wallet}_portfolio.json`
-
-**API Endpoints Used**:
-- `GET /api/portfolio/{wallet}` вЂ” get statistics (if implemented)
 
 ## Styling Conventions
 

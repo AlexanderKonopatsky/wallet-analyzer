@@ -1,4 +1,4 @@
-﻿# DeFi Wallet Analyzer
+# DeFi Wallet Analyzer
 
 ## Project Overview
 Full-stack application for analyzing cryptocurrency wallet transactions. Fetches transactions via Cielo Finance API, analyzes them using AI (Google Gemini via OpenRouter), and generates reports in Russian language.
@@ -16,7 +16,6 @@ Full-stack application for analyzing cryptocurrency wallet transactions. Fetches
 в”‚   в”њв”Ђв”Ђ main.py            # Cielo API client (fetch transactions)
 в”‚   в”њв”Ђв”Ђ analyze.py         # AI analysis engine (Gemini via OpenRouter)
 в”‚   в”њв”Ђв”Ђ categories.py      # Wallet category management
-в”‚   в”њв”Ђв”Ђ portfolio.py       # Portfolio statistics (Grade A-F, P&L)
 в”‚   в””в”Ђв”Ђ server.py          # FastAPI REST API + background tasks
 в”њв”Ђв”Ђ frontend/              # React application
 в”‚   в”њв”Ђв”Ђ CLAUDE.md          # рџ“љ Frontend documentation (components, data flow)
@@ -26,11 +25,10 @@ Full-stack application for analyzing cryptocurrency wallet transactions. Fetches
 в”‚           в”њв”Ђв”Ђ WalletSidebar.jsx   # Wallet list + refresh button
 в”‚           в”њв”Ђв”Ђ ReportView.jsx      # Markdown reports + related wallets
 в”‚           в”њв”Ђв”Ђ ProfileView.jsx     # AI-generated wallet profile
-в”‚           в””в”Ђв”Ђ PortfolioView.jsx   # Aggregated statistics
 в”њв”Ђв”Ђ data/                  # Transaction JSON files
 в”‚   в””в”Ђв”Ђ CLAUDE.md          # рџ“љ Data formats (transactions, tags, excluded wallets)
 в”њв”Ђв”Ђ reports/               # Markdown reports + state files
-в”‚   в””в”Ђв”Ђ CLAUDE.md          # рџ“љ Report structure, state files, portfolio JSON
+в”‚   в””в”Ђв”Ђ CLAUDE.md          # рџ“љ Report structure, state files, profile JSON
 в””в”Ђв”Ђ .env                   # API keys (not committed)
 ```
 
@@ -38,7 +36,7 @@ Full-stack application for analyzing cryptocurrency wallet transactions. Fetches
 - **[backend/CLAUDE.md](backend/CLAUDE.md)** вЂ” Backend modules, API endpoints, background tasks, error handling
 - **[frontend/CLAUDE.md](frontend/CLAUDE.md)** вЂ” React components, data flow, UI patterns, API usage
 - **[data/CLAUDE.md](data/CLAUDE.md)** вЂ” Transaction formats, metadata files (tags, categories, excluded)
-- **[reports/CLAUDE.md](reports/CLAUDE.md)** вЂ” Report structure, state files, portfolio/profile JSON formats
+- **[reports/CLAUDE.md](reports/CLAUDE.md)** вЂ” Report structure, state files, profile JSON formats
 
 ## Commands
 
@@ -87,7 +85,6 @@ npm run build
 - `GET /api/report/{wallet}` вЂ” markdown report + related wallets
 - `POST /api/refresh/{wallet}` вЂ” start background refresh (fetch + analyze + auto-classify related)
 - `GET /api/refresh-status/{wallet}` вЂ” refresh status
-- `GET /api/portfolio/{wallet}` вЂ” Grade A-F, P&L, win rate
 - **Full list**: see [backend/CLAUDE.md](backend/CLAUDE.md)
 
 ## Key Conventions
@@ -152,29 +149,6 @@ For large wallets (10K+ transactions), LLM context grows linearly as each chunk 
 **Token Savings**: For 73-chunk wallet, context plateaus at ~4K input tokens (vs ~18K+ without compression).
 
 Set `CONTEXT_COMPRESSION_ENABLED=false` to disable and revert to flat list behavior.
-
-## Portfolio Analysis (Grade A-F)
-New module `portfolio.py` replays all transactions chronologically (FIFO cost basis tracking) and calculates:
-- **Grade (A-F)** based on win rate + profitability magnitude
-- **Realized P&L** per token, protocol, and overall
-- **Win Rate** and average trade metrics
-- **Expandable drilldown** in UI вЂ” click token/protocol to see all individual trades
-
-### Known Limitations & TODOs
-1. **Zero-cost tokens**: Tokens acquired via lending borrow, LP, or untracked transfers have $0 cost basis. When sold, P&L is set to $0 (conservative) since true cost is unknown. This may undercount profits if the wallet acquired tokens via recognized on-chain sources (rewards, airdrops, etc.) but those weren't captured by Cielo API.
-
-2. **No unrealized P&L**: Only realized P&L is calculated (when tokens are sold). Current holdings show quantity only, not USD value вЂ” would require live price feed.
-
-3. **Dust filtering**: Trades <$1 cost or proceeds are excluded from metrics.
-
-4. **Missing transaction sources**: If Cielo API doesn't capture some transfer/lending events, cost basis tracking may be incomplete.
-
-### Future Improvements
-- Integrate live price feed (Uniswap, CoinGecko) for unrealized P&L
-- Classify tokens by source (swap, transfer, airdrop) to improve cost basis estimation
-- Add portfolio composition heatmap (token allocation over time)
-- Export portfolio data (CSV, JSON) for external analysis
-- Support multi-wallet portfolio aggregation
 
 ## Important Notes
 - Don't commit `.env`, `data/`, `reports/` (in .gitignore)

@@ -63,41 +63,6 @@ User actively performed intermediary or transit wallet functions on **Base** net
   - Used to skip already analyzed transactions
 - `pending_tx_keys` — transactions in queue (usually empty)
 
-## Portfolio Files
-
-**File**: `{wallet_address}_portfolio.json`
-
-**Purpose**: Aggregated activity statistics by tokens, protocols, chains.
-
-**Structure**:
-```json
-{
-  "summary": {
-    "total_transactions": 1234,
-    "unique_tokens": 56,
-    "chains": ["ethereum", "arbitrum", "base"],
-    "date_range": {
-      "first": "2024-01-15",
-      "last": "2026-02-07"
-    }
-  },
-  "by_token": {
-    "USDC": {
-      "total_received": 15000.00,
-      "total_sent": 12000.00,
-      "net": 3000.00,
-      "chains": ["ethereum", "arbitrum"]
-    }
-  },
-  "by_protocol": {
-    "Uniswap": {
-      "swap_count": 45,
-      "volume_usd": 123456.78
-    }
-  }
-}
-```
-
 ## Profile Files
 
 **File**: `{wallet_address}_profile.json`
