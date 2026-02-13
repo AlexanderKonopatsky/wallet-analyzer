@@ -44,7 +44,6 @@ JWT_SECRET=your_jwt_secret
 
 **Optional:**
 ```
-AUTO_CLASSIFY_ENABLED=false
 FULL_CHRONOLOGY_COUNT=1
 CONTEXT_COMPRESSION_ENABLED=true
 ```
@@ -112,10 +111,6 @@ Add Railway URL to Google OAuth:
 - Check logs for "Frontend dist folder not found"
 - Verify `frontend/dist` exists after build
 
-### Playwright errors
-- Playwright requires `--with-deps` flag (included in `start.sh`)
-- Check logs for Chromium installation errors
-
 ### Database errors
 - Ensure volumes are mounted correctly
 - Check `data/` and `reports/` paths in logs
@@ -142,7 +137,6 @@ Add Railway URL to Google OAuth:
 | Backend | uvicorn (8000) | uvicorn on $PORT |
 | CORS | localhost only | Railway domain auto-added |
 | Data | Local files | Persistent Volumes |
-| Playwright | Requires manual install | Auto-installed in `start.sh` |
 
 ---
 

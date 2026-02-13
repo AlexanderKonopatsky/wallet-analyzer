@@ -1,28 +1,28 @@
-# Frontend (React + Vite)
+﻿# Frontend (React + Vite)
 
 React 19 application with Vite 7 for visualizing cryptocurrency wallet analysis.
 
 ## Tech Stack
-- **React 19** — UI framework
-- **Vite 7** — dev server & bundler
-- **react-markdown** — markdown report rendering
-- **CSS Modules** — component styling
+- **React 19** вЂ” UI framework
+- **Vite 7** вЂ” dev server & bundler
+- **react-markdown** вЂ” markdown report rendering
+- **CSS Modules** вЂ” component styling
 
 ## Project Structure
 ```
 src/
-├── main.jsx          # Entry point
-├── App.jsx           # Main app component (routing, state)
-├── App.css           # Global styles
-├── index.css         # Base styles
-└── components/
-    ├── WalletSidebar.jsx     # Wallet list + tags
-    ├── WalletSidebar.css
-    ├── ReportView.jsx        # Markdown report display
-    ├── ReportView.css
-    ├── ProfileView.jsx       # Wallet profile (AI-generated)
-    ├── PortfolioView.jsx     # Aggregated statistics
-    └── PortfolioView.css
+в”њв”Ђв”Ђ main.jsx          # Entry point
+в”њв”Ђв”Ђ App.jsx           # Main app component (routing, state)
+в”њв”Ђв”Ђ App.css           # Global styles
+в”њв”Ђв”Ђ index.css         # Base styles
+в””в”Ђв”Ђ components/
+    в”њв”Ђв”Ђ WalletSidebar.jsx     # Wallet list + tags
+    в”њв”Ђв”Ђ WalletSidebar.css
+    в”њв”Ђв”Ђ ReportView.jsx        # Markdown report display
+    в”њв”Ђв”Ђ ReportView.css
+    в”њв”Ђв”Ђ ProfileView.jsx       # Wallet profile (AI-generated)
+    в”њв”Ђв”Ђ PortfolioView.jsx     # Aggregated statistics
+    в””в”Ђв”Ђ PortfolioView.css
 ```
 
 ## Components
@@ -42,7 +42,7 @@ const [activeTab, setActiveTab] = useState('report')       // Current tab
 ```
 
 **API Endpoints Used**:
-- `GET /api/wallets` — get wallet list + metadata
+- `GET /api/wallets` вЂ” get wallet list + metadata
 
 ### WalletSidebar.jsx
 **Responsibilities**:
@@ -54,13 +54,13 @@ const [activeTab, setActiveTab] = useState('report')       // Current tab
 
 **Key Features**:
 - Poll refresh status (`/api/refresh-status/{wallet}`) every 2 sec while task is active
-- Color indicators: 🔄 processing, ✅ completed, ❌ error
+- Color indicators: рџ”„ processing, вњ… completed, вќЊ error
 - Inline tag editing (double click)
 
 **API Endpoints Used**:
-- `PUT /api/tags/{wallet}` — update tag
-- `POST /api/refresh/{wallet}` — start refresh (fetch + analyze)
-- `GET /api/refresh-status/{wallet}` — get refresh status
+- `PUT /api/tags/{wallet}` вЂ” update tag
+- `POST /api/refresh/{wallet}` вЂ” start refresh (fetch + analyze)
+- `GET /api/refresh-status/{wallet}` вЂ” get refresh status
 
 ### ReportView.jsx
 **Responsibilities**:
@@ -68,25 +68,19 @@ const [activeTab, setActiveTab] = useState('report')       // Current tab
 - Render via `react-markdown`
 - Show "related wallets" (addresses with highest activity)
 - Exclude/include buttons for related wallets
-- Auto-classify related wallets via LLM
 
 **Key Features**:
 - **Related Wallets**: cards with addresses that had the most activity
   - Display: address, amounts sent/received (USD), transaction count
   - Buttons: "Show transactions", "Exclude", "Include", "Classify" (LLM)
 - **Batch Auto-Classification**: parallel classification of multiple related wallets
-  - Controlled via `AUTO_CLASSIFY_BATCH_SIZE` (default: 3)
   - UI shows progress for each request
 - **Transaction Details**: expandable lists of transactions for each related wallet
   - Show: date, type, amount, token, chain
 
 **API Endpoints Used**:
-- `GET /api/report/{wallet}` — get markdown + related wallets
-- `GET /api/related-transactions/{wallet}?counterparty={addr}&direction={sent|received}` — transactions
-- `POST /api/classify-wallet/{address}` — classify via LLM
-- `POST /api/excluded-wallets` — add to exclusions
-- `DELETE /api/excluded-wallets/{address}` — remove from exclusions
-- `GET /api/settings` — get settings (batch size, etc.)
+- `GET /api/report/{wallet}` вЂ” get markdown + related wallets
+- `GET /api/settings` вЂ” get settings (batch size, etc.)
 
 **Related Wallet Card Structure**:
 ```jsx
@@ -119,7 +113,7 @@ const [activeTab, setActiveTab] = useState('report')       // Current tab
 **Data Source**: `reports/{wallet}_profile.json`
 
 **API Endpoints Used**:
-- `GET /api/profile/{wallet}` — get profile (if implemented)
+- `GET /api/profile/{wallet}` вЂ” get profile (if implemented)
 - Or load directly from `reports/` (static file)
 
 ### PortfolioView.jsx
@@ -130,7 +124,7 @@ const [activeTab, setActiveTab] = useState('report')       // Current tab
 **Data Source**: `reports/{wallet}_portfolio.json`
 
 **API Endpoints Used**:
-- `GET /api/portfolio/{wallet}` — get statistics (if implemented)
+- `GET /api/portfolio/{wallet}` вЂ” get statistics (if implemented)
 
 ## Styling Conventions
 
@@ -144,11 +138,11 @@ const [activeTab, setActiveTab] = useState('report')       // Current tab
 ## Data Flow
 
 1. **App.jsx** loads wallet list on mount
-2. User selects wallet → `setSelectedWallet(addr)`
+2. User selects wallet в†’ `setSelectedWallet(addr)`
 3. **ReportView** loads report for `selectedWallet`
 4. User clicks "Refresh" in **WalletSidebar**
    - POST `/api/refresh/{wallet}` is sent
-   - Background task starts (fetch → analyze)
+   - Background task starts (fetch в†’ analyze)
    - Frontend polls `/api/refresh-status/{wallet}` every 2 sec
    - On "completed" status, UI updates
 

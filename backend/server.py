@@ -1,4 +1,4 @@
-import hashlib
+﻿import hashlib
 import io
 import json
 import os
@@ -73,7 +73,6 @@ from categories import (
     get_category_stats,
     get_wallets_by_category,
 )
-from debank_parser import get_protocol_type
 
 CHAIN_EXPLORERS = {
     "ethereum": "https://etherscan.io/tx/",
@@ -144,7 +143,6 @@ print(f"[Init] Data directory: {DATA_DIR} (exists: {DATA_DIR.exists()})")
 print(f"[Init] Reports directory: {REPORTS_DIR} (exists: {REPORTS_DIR.exists()})")
 TAGS_FILE = DATA_DIR / "wallet_tags.json"
 REFRESH_STATUS_FILE = DATA_DIR / "refresh_status.json"
-EXCLUDED_WALLETS_FILE = DATA_DIR / "excluded_wallets.json"
 HIDDEN_WALLETS_FILE = DATA_DIR / "hidden_wallets.json"
 DATA_BACKUP_ARCHIVE_DIR = DATA_DIR / "backups"
 DATA_BACKUP_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
@@ -180,23 +178,15 @@ PROFILE_MODEL = os.getenv("PROFILE_MODEL", "google/gemini-3-pro-preview")
 PROFILE_MAX_TOKENS = int(os.getenv("PROFILE_MAX_TOKENS", 15192))
 PROFILE_COST_BASE_USD = float(os.getenv("PROFILE_COST_BASE_USD", "0.03686"))
 PROFILE_COST_PER_WORD_USD = float(os.getenv("PROFILE_COST_PER_WORD_USD", "0.000005846"))
-PROFILE_SYSTEM_PROMPT = """Ты — опытный ончейн-аналитик. Тебе дана подробная хронология активности крипто-кошелька.
+PROFILE_SYSTEM_PROMPT = """РўС‹ вЂ” РѕРїС‹С‚РЅС‹Р№ РѕРЅС‡РµР№РЅ-Р°РЅР°Р»РёС‚РёРє. РўРµР±Рµ РґР°РЅР° РїРѕРґСЂРѕР±РЅР°СЏ С…СЂРѕРЅРѕР»РѕРіРёСЏ Р°РєС‚РёРІРЅРѕСЃС‚Рё РєСЂРёРїС‚Рѕ-РєРѕС€РµР»СЊРєР°.
 
-Прочитай отчёт целиком и составь глубокий профиль владельца. Не следуй шаблону — каждый кошелёк уникален, и профиль должен отражать именно то, что делает этого владельца особенным. Пиши о том, что действительно бросается в глаза и заслуживает внимания.
+РџСЂРѕС‡РёС‚Р°Р№ РѕС‚С‡С‘С‚ С†РµР»РёРєРѕРј Рё СЃРѕСЃС‚Р°РІСЊ РіР»СѓР±РѕРєРёР№ РїСЂРѕС„РёР»СЊ РІР»Р°РґРµР»СЊС†Р°. РќРµ СЃР»РµРґСѓР№ С€Р°Р±Р»РѕРЅСѓ вЂ” РєР°Р¶РґС‹Р№ РєРѕС€РµР»С‘Рє СѓРЅРёРєР°Р»РµРЅ, Рё РїСЂРѕС„РёР»СЊ РґРѕР»Р¶РµРЅ РѕС‚СЂР°Р¶Р°С‚СЊ РёРјРµРЅРЅРѕ С‚Рѕ, С‡С‚Рѕ РґРµР»Р°РµС‚ СЌС‚РѕРіРѕ РІР»Р°РґРµР»СЊС†Р° РѕСЃРѕР±РµРЅРЅС‹Рј. РџРёС€Рё Рѕ С‚РѕРј, С‡С‚Рѕ РґРµР№СЃС‚РІРёС‚РµР»СЊРЅРѕ Р±СЂРѕСЃР°РµС‚СЃСЏ РІ РіР»Р°Р·Р° Рё Р·Р°СЃР»СѓР¶РёРІР°РµС‚ РІРЅРёРјР°РЅРёСЏ.
 
-Не пересказывай транзакции. Анализируй поведение, читай между строк, делай выводы. Ссылайся на конкретные события из отчёта как доказательства. Пиши на русском, используй markdown."""
-
-# Wallet classification settings
-# Note: DeBank classification uses a lock, so parallel requests are serialized anyway
-AUTO_CLASSIFY_ENABLED = os.getenv("AUTO_CLASSIFY_ENABLED", "false").lower() == "true"
-AUTO_CLASSIFY_BATCH_SIZE = int(os.getenv("AUTO_CLASSIFY_BATCH_SIZE", 1))
+РќРµ РїРµСЂРµСЃРєР°Р·С‹РІР°Р№ С‚СЂР°РЅР·Р°РєС†РёРё. РђРЅР°Р»РёР·РёСЂСѓР№ РїРѕРІРµРґРµРЅРёРµ, С‡РёС‚Р°Р№ РјРµР¶РґСѓ СЃС‚СЂРѕРє, РґРµР»Р°Р№ РІС‹РІРѕРґС‹. РЎСЃС‹Р»Р°Р№СЃСЏ РЅР° РєРѕРЅРєСЂРµС‚РЅС‹Рµ СЃРѕР±С‹С‚РёСЏ РёР· РѕС‚С‡С‘С‚Р° РєР°Рє РґРѕРєР°Р·Р°С‚РµР»СЊСЃС‚РІР°. РџРёС€Рё РЅР° СЂСѓСЃСЃРєРѕРј, РёСЃРїРѕР»СЊР·СѓР№ markdown."""
 
 # Auto-refresh settings
 AUTO_REFRESH_ENABLED = os.getenv("AUTO_REFRESH_ENABLED", "false").lower() == "true"
 AUTO_REFRESH_TIME = os.getenv("AUTO_REFRESH_TIME", "23:00")
-
-# DeBank classification lock (Playwright is not thread-safe)
-debank_lock = threading.Lock()
 
 # Background task status tracking: {wallet: {status, detail, thread_id}}
 refresh_tasks: dict[str, dict] = {}
@@ -248,8 +238,7 @@ def load_refresh_status(user_id: int, cleanup: bool = False, db: Database = None
             if cleanup and db:
                 cleaned = {}
                 for wallet, status in statuses.items():
-                    # Keep if user owns wallet or if it's a classify task key
-                    if wallet.startswith("classify_") or check_wallet_ownership(db, user_id, wallet):
+                    if check_wallet_ownership(db, user_id, wallet):
                         cleaned[wallet] = status
                     else:
                         print(f"[Cleanup] Removing orphaned status for {wallet} (user {user_id})")
@@ -271,24 +260,6 @@ def save_refresh_status(user_id: int, status_dict: dict) -> None:
     status_file = user_dir / "refresh_status.json"
     with open(status_file, "w", encoding="utf-8") as f:
         json.dump(status_dict, f, indent=2, ensure_ascii=False)
-
-
-def load_excluded_wallets() -> dict:
-    """Load excluded wallet addresses from global file (shared DeBank cache)."""
-    if EXCLUDED_WALLETS_FILE.exists():
-        try:
-            with open(EXCLUDED_WALLETS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
-
-
-def save_excluded_wallets(excluded: dict) -> None:
-    """Save excluded wallet addresses to global file (shared DeBank cache)."""
-    DATA_DIR.mkdir(exist_ok=True)
-    with open(EXCLUDED_WALLETS_FILE, "w", encoding="utf-8") as f:
-        json.dump(excluded, f, indent=2, ensure_ascii=False)
 
 
 def load_hidden_wallets(user_id: int) -> set:
@@ -331,8 +302,10 @@ def load_analysis_consents(user_id: int) -> set:
     inferred = {
         wallet.lower()
         for wallet, status in statuses.items()
-        if not wallet.startswith("classify_")
-        and isinstance(status, dict)
+        if isinstance(status, dict)
+        and isinstance(wallet, str)
+        and wallet.lower().startswith("0x")
+        and len(wallet) == 42
         and status.get("status") in ("done", "analyzing", "error")
     }
     if inferred:
@@ -782,7 +755,7 @@ def add_user_wallet(db: Database, user_id: int, wallet_address: str):
         print(f"[DB] Added wallet {wallet_address} for user {user_id}")
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# в”Ђв”Ђ Helpers в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 
 def ensure_data_backup_access(current_user: User) -> None:
@@ -994,10 +967,10 @@ def run_analysis_pipeline(wallet: str, user_id: int = None, progress_callback=No
     chunks = make_chunks(day_groups)
     total_chunks = len(chunks)
 
-    print(f"🚀 Начинаю анализ кошелька {wallet[:10]}...")
-    print(f"📦 Найдено {len(new_txs)} новых транзакций, разбито на {total_chunks} chunks")
+    print(f"рџљЂ РќР°С‡РёРЅР°СЋ Р°РЅР°Р»РёР· РєРѕС€РµР»СЊРєР° {wallet[:10]}...")
+    print(f"рџ“¦ РќР°Р№РґРµРЅРѕ {len(new_txs)} РЅРѕРІС‹С… С‚СЂР°РЅР·Р°РєС†РёР№, СЂР°Р·Р±РёС‚Рѕ РЅР° {total_chunks} chunks")
     if resuming:
-        print(f"♻️ Продолжаю с chunk {start_chunk + 1}/{total_chunks}")
+        print(f"в™»пёЏ РџСЂРѕРґРѕР»Р¶Р°СЋ СЃ chunk {start_chunk + 1}/{total_chunks}")
 
     for i in range(start_chunk, total_chunks):
         chunk = chunks[i]
@@ -1025,14 +998,14 @@ def run_analysis_pipeline(wallet: str, user_id: int = None, progress_callback=No
 
         user_prompt = f"""{context}
 
-## Транзакции для анализа:
+## РўСЂР°РЅР·Р°РєС†РёРё РґР»СЏ Р°РЅР°Р»РёР·Р°:
 {tx_text}
 
-Опиши хронологию действий пользователя по дням."""
+РћРїРёС€Рё С…СЂРѕРЅРѕР»РѕРіРёСЋ РґРµР№СЃС‚РІРёР№ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ РїРѕ РґРЅСЏРј."""
 
         # Report progress before LLM call
         current_percent = int((i / total_chunks) * 100)
-        print(f"📊 Анализ chunk {i + 1}/{total_chunks} для кошелька {wallet[:10]}... ({len(formatted_lines)} транзакций, {current_percent}%)")
+        print(f"рџ“Љ РђРЅР°Р»РёР· chunk {i + 1}/{total_chunks} РґР»СЏ РєРѕС€РµР»СЊРєР° {wallet[:10]}... ({len(formatted_lines)} С‚СЂР°РЅР·Р°РєС†РёР№, {current_percent}%)")
         if progress_callback:
             progress_callback(i + 1, total_chunks, current_percent)
 
@@ -1041,7 +1014,7 @@ def run_analysis_pipeline(wallet: str, user_id: int = None, progress_callback=No
 
         # Report progress after LLM call
         completed_percent = int(((i + 1) / total_chunks) * 100)
-        print(f"✅ Chunk {i + 1}/{total_chunks} обработан ({completed_percent}%)")
+        print(f"вњ… Chunk {i + 1}/{total_chunks} РѕР±СЂР°Р±РѕС‚Р°РЅ ({completed_percent}%)")
         if progress_callback:
             progress_callback(i + 1, total_chunks, completed_percent)
 
@@ -1066,7 +1039,7 @@ def run_analysis_pipeline(wallet: str, user_id: int = None, progress_callback=No
     })
 
     save_report(wallet, chronology_parts)
-    print(f"🎉 Анализ кошелька {wallet[:10]}... завершен! Отчет сохранен.")
+    print(f"рџЋ‰ РђРЅР°Р»РёР· РєРѕС€РµР»СЊРєР° {wallet[:10]}... Р·Р°РІРµСЂС€РµРЅ! РћС‚С‡РµС‚ СЃРѕС…СЂР°РЅРµРЅ.")
 
 
 def background_refresh(wallet: str, user_id: int) -> None:
@@ -1195,20 +1168,6 @@ def background_refresh(wallet: str, user_id: int) -> None:
         save_refresh_status(user_id, user_refresh_tasks)
         refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
 
-        # Step 3: Auto-classify related wallets in background (if enabled)
-        if AUTO_CLASSIFY_ENABLED:
-            print(f"[Refresh] Step 3: Starting auto-classification for {wallet_lower}", flush=True)
-            classify_thread = threading.Thread(
-                target=classify_related_wallets_background,
-                args=(wallet_lower,),
-                daemon=False  # Non-daemon so it continues after browser closes
-            )
-            task_key = f"classify_{wallet_lower}"
-            active_threads[task_key] = classify_thread
-            classify_thread.start()
-        else:
-            print(f"[Refresh] Step 3: Auto-classification disabled (AUTO_CLASSIFY_ENABLED=false)", flush=True)
-
     except Exception as e:
         print(f"[Refresh] ERROR for {wallet_lower}: {e}", flush=True)
         user_refresh_tasks = load_refresh_status(user_id)
@@ -1216,18 +1175,18 @@ def background_refresh(wallet: str, user_id: int) -> None:
         save_refresh_status(user_id, user_refresh_tasks)
         refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
     finally:
-        # Clean up thread reference (but not classify thread - it runs independently)
+        # Clean up thread reference
         active_threads.pop(wallet_lower, None)
 
 
-# ── Startup: Initialize refresh tasks tracking ──────────────────────────────
+# в”Ђв”Ђ Startup: Initialize refresh tasks tracking в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 # Note: refresh_tasks will now be loaded per-user when needed
 # Global dict still used for in-memory tracking of active background tasks
 refresh_tasks: dict[str, dict] = {}
 
 
-# ── Request/Response Models ──────────────────────────────────────────────────
+# в”Ђв”Ђ Request/Response Models в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 
 class RequestCodeRequest(BaseModel):
@@ -1246,7 +1205,7 @@ class GoogleAuthRequest(BaseModel):
     token: str
 
 
-# ── Auth Endpoints ────────────────────────────────────────────────────────────
+# в”Ђв”Ђ Auth Endpoints в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 
 class PaymentQuoteRequest(BaseModel):
@@ -1342,15 +1301,13 @@ async def get_me(current_user: User = Depends(get_current_user)):
     }
 
 
-# ── API Endpoints ─────────────────────────────────────────────────────────────
+# в”Ђв”Ђ API Endpoints в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 
 @app.get("/api/settings")
 def get_settings():
     """Get application settings."""
     return {
-        "auto_classify_enabled": AUTO_CLASSIFY_ENABLED,
-        "auto_classify_batch_size": AUTO_CLASSIFY_BATCH_SIZE,
         "auto_refresh_enabled": AUTO_REFRESH_ENABLED,
         "auto_refresh_time": AUTO_REFRESH_TIME,
         "data_backup_restricted": bool(DATA_BACKUP_ADMIN_EMAILS),
@@ -1906,7 +1863,7 @@ async def set_tag(
     return {"address": wallet_lower, "tag": tag}
 
 
-# ── Categories API ────────────────────────────────────────────────────────────
+# в”Ђв”Ђ Categories API в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 
 @app.get("/api/categories")
@@ -2023,7 +1980,7 @@ def get_wallet_category_info(
     return {"wallet": wallet_lower, "category": None}
 
 
-# ── Wallet Hiding/Unhiding ────────────────────────────────────────────────────
+# в”Ђв”Ђ Wallet Hiding/Unhiding в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 
 @app.post("/api/wallets/{wallet}/hide")
@@ -2213,7 +2170,7 @@ def generate_profile(
         )
 
     # Generate profile via LLM
-    user_prompt = f"Вот хронология активности кошелька:\n\n{markdown}\n\nСоставь профиль этого кошелька."
+    user_prompt = f"Р’РѕС‚ С…СЂРѕРЅРѕР»РѕРіРёСЏ Р°РєС‚РёРІРЅРѕСЃС‚Рё РєРѕС€РµР»СЊРєР°:\n\n{markdown}\n\nРЎРѕСЃС‚Р°РІСЊ РїСЂРѕС„РёР»СЊ СЌС‚РѕРіРѕ РєРѕС€РµР»СЊРєР°."
     profile_text = call_llm(PROFILE_SYSTEM_PROMPT, user_prompt, model=PROFILE_MODEL, max_tokens=PROFILE_MAX_TOKENS)
 
     # Deduct generation cost from user's balance
@@ -2243,7 +2200,7 @@ def generate_profile(
     return profile_data
 
 
-# ── Portfolio Analysis ────────────────────────────────────────────────────────
+# в”Ђв”Ђ Portfolio Analysis в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 
 @app.get("/api/portfolio/{wallet}")
@@ -2291,224 +2248,6 @@ def refresh_portfolio(
         raise HTTPException(status_code=404, detail="No transaction data found")
 
     return analyze_portfolio(wallet)
-
-
-# ── Wallet Exclusion (classification) ─────────────────────────────────────────
-
-
-def classify_wallet_address(address: str, context: str = "") -> dict:
-    """Use DeBank to classify whether a wallet is a known contract/protocol or personal wallet.
-
-    Uses a lock to ensure only one DeBank request at a time (Playwright is not thread-safe).
-    """
-    # Acquire lock to prevent parallel Playwright instances
-    with debank_lock:
-        try:
-            print(f"[Classify DeBank] Fetching info for {address}...")
-            result = get_protocol_type(address, timeout=30000)
-
-            if not result.get("success"):
-                error_msg = result.get("error", "Unknown error")
-                print(f"[Classify DeBank] Failed to fetch info: {error_msg}")
-                return {
-                    "is_excluded": False,
-                    "label": "unknown",
-                    "name": "",
-                    "reasoning": f"DeBank fetch failed: {error_msg}",
-                }
-
-            protocol = result.get("protocol")
-            balance = result.get("balance")
-
-            # If protocol is found, it's a contract/protocol (exclude it)
-            if protocol:
-                print(f"[Classify DeBank] Found protocol: {protocol}")
-                reasoning = f"DeBank identifies this as a protocol: {protocol}"
-                if balance:
-                    reasoning += f" (Balance: {balance})"
-
-                return {
-                    "is_excluded": True,
-                    "label": "contract",
-                    "name": protocol,
-                    "reasoning": reasoning,
-                }
-            else:
-                # No protocol = personal wallet
-                print(f"[Classify DeBank] No protocol found, likely personal wallet")
-                reasoning = "DeBank shows no protocol tag - appears to be a personal wallet"
-                if balance:
-                    reasoning += f" (Balance: {balance})"
-
-                return {
-                    "is_excluded": False,
-                    "label": "personal",
-                    "name": "",
-                    "reasoning": reasoning,
-                }
-
-        except Exception as e:
-            print(f"[Classify DeBank] Classification failed for {address}: {e}")
-            return {
-                "is_excluded": False,
-                "label": "unknown",
-                "name": "",
-                "reasoning": f"DeBank classification error: {str(e)}",
-            }
-
-
-def classify_related_wallets_background(wallet: str) -> None:
-    """Background task: classify all related wallets for a given wallet.
-
-    This runs automatically after wallet refresh/analysis and continues
-    even if the user closes the browser.
-    """
-    wallet_lower = wallet.lower()
-    task_key = f"classify_{wallet_lower}"
-
-    try:
-        print(f"[Auto-classify] Starting background classification for {wallet_lower}")
-
-        # Verify data file exists before proceeding
-        data_file = DATA_DIR / f"{wallet_lower}.json"
-        if not data_file.exists():
-            print(f"[Auto-classify] Data file not found for {wallet_lower}, skipping classification")
-            refresh_tasks[task_key] = {
-                "status": "error",
-                "detail": "Transaction data not found",
-                "progress": "0/0"
-            }
-            save_refresh_status(refresh_tasks)
-            return
-
-        # Update status
-        refresh_tasks[task_key] = {
-            "status": "classifying",
-            "detail": "Finding related wallets...",
-            "progress": "0/0"
-        }
-        save_refresh_status(refresh_tasks)
-
-        # Load transactions and find related wallets
-        raw_txs = load_transactions(wallet_lower)
-        if not raw_txs:
-            print(f"[Auto-classify] No transactions found for {wallet_lower}")
-            refresh_tasks[task_key] = {
-                "status": "done",
-                "detail": "No transactions found",
-                "progress": "0/0"
-            }
-            save_refresh_status(refresh_tasks)
-            return
-
-        txs = filter_transactions(raw_txs)
-
-        # Track related addresses (same logic as /api/related-wallets)
-        sent_to: dict[str, list] = {}
-        received_from: dict[str, list] = {}
-
-        for tx in txs:
-            if tx.get("tx_type") != "transfer":
-                continue
-
-            frm = (tx.get("from") or "").lower()
-            to = (tx.get("to") or "").lower()
-
-            if frm == wallet_lower and to and to != wallet_lower:
-                sent_to.setdefault(to, []).append(tx)
-            elif to == wallet_lower and frm and frm != wallet_lower:
-                received_from.setdefault(frm, []).append(tx)
-
-        # Find bidirectional addresses
-        bidirectional = set(sent_to.keys()) & set(received_from.keys())
-        related_addresses = list(bidirectional)
-
-        if not related_addresses:
-            print(f"[Auto-classify] No related wallets found for {wallet_lower}")
-            refresh_tasks[task_key] = {
-                "status": "done",
-                "detail": "No related wallets found",
-                "progress": "0/0"
-            }
-            save_refresh_status(refresh_tasks)
-            return
-
-        print(f"[Auto-classify] Found {len(related_addresses)} related wallets")
-
-        # Load existing classifications
-        classified = load_excluded_wallets()
-
-        # Filter out already classified
-        to_classify = [addr for addr in related_addresses if addr not in classified]
-
-        if not to_classify:
-            print(f"[Auto-classify] All {len(related_addresses)} wallets already classified")
-            refresh_tasks[task_key] = {
-                "status": "done",
-                "detail": f"All {len(related_addresses)} wallets already classified",
-                "progress": f"{len(related_addresses)}/{len(related_addresses)}"
-            }
-            save_refresh_status(refresh_tasks)
-            return
-
-        print(f"[Auto-classify] Classifying {len(to_classify)} new wallets (skipping {len(related_addresses) - len(to_classify)} cached)")
-
-        # Classify each wallet
-        for i, address in enumerate(to_classify, 1):
-            try:
-                # Update progress
-                refresh_tasks[task_key] = {
-                    "status": "classifying",
-                    "detail": f"Classifying {address[:10]}... ({i}/{len(to_classify)})",
-                    "progress": f"{i}/{len(to_classify)}"
-                }
-                save_refresh_status(refresh_tasks)
-
-                print(f"[Auto-classify] [{i}/{len(to_classify)}] Classifying {address}")
-
-                # Classify using DeBank (with lock)
-                classification = classify_wallet_address(address)
-
-                # Save result
-                is_excluded = classification.get("is_excluded", False)
-                classified[address] = {
-                    "is_excluded": is_excluded,
-                    "label": classification.get("label", "unknown"),
-                    "name": classification.get("name", ""),
-                    "reason": classification.get("reasoning", ""),
-                    "source": "debank_auto",
-                    "classified_at": datetime.now(timezone.utc).isoformat(),
-                }
-                save_excluded_wallets(classified)
-
-                print(f"[Auto-classify] [{i}/{len(to_classify)}] {address} → {classification.get('label')} (excluded: {is_excluded})")
-
-            except Exception as e:
-                print(f"[Auto-classify] Error classifying {address}: {e}")
-                # Continue with next wallet even if one fails
-                continue
-
-        # Done
-        total = len(related_addresses)
-        refresh_tasks[task_key] = {
-            "status": "done",
-            "detail": f"Classified {len(to_classify)} wallets ({total - len(to_classify)} were cached)",
-            "progress": f"{total}/{total}"
-        }
-        save_refresh_status(refresh_tasks)
-        print(f"[Auto-classify] Done! Classified {len(to_classify)} new wallets for {wallet_lower}")
-
-    except Exception as e:
-        print(f"[Auto-classify] Failed for {wallet_lower}: {e}")
-        refresh_tasks[task_key] = {
-            "status": "error",
-            "detail": str(e),
-            "progress": "0/0"
-        }
-        save_refresh_status(refresh_tasks)
-    finally:
-        # Clean up thread reference
-        active_threads.pop(task_key, None)
 
 
 def auto_refresh_all_wallets() -> None:
@@ -2623,77 +2362,6 @@ def run_scheduler() -> None:
             time.sleep(60)
 
 
-@app.get("/api/excluded-wallets")
-def get_excluded_wallets():
-    """Get all excluded wallet addresses."""
-    return load_excluded_wallets()
-
-
-@app.post("/api/excluded-wallets")
-async def add_excluded_wallet(request: Request):
-    """Manually add a wallet to the exclusion list."""
-    body = await request.json()
-    address = (body.get("address", "")).lower().strip()
-    if not address:
-        raise HTTPException(status_code=400, detail="Address is required")
-
-    excluded = load_excluded_wallets()
-    excluded[address] = {
-        "is_excluded": True,
-        "label": body.get("label", "other"),
-        "name": body.get("name", ""),
-        "reason": body.get("reason", "Manually excluded by user"),
-        "source": "manual",
-        "classified_at": datetime.now(timezone.utc).isoformat(),
-    }
-    save_excluded_wallets(excluded)
-    return {"address": address, **excluded[address]}
-
-
-@app.delete("/api/excluded-wallets/{address:path}")
-def remove_excluded_wallet(address: str):
-    """Remove a wallet from the exclusion list."""
-    address = address.lower()
-    excluded = load_excluded_wallets()
-    if address not in excluded:
-        raise HTTPException(status_code=404, detail="Address not in exclusion list")
-    removed = excluded.pop(address)
-    save_excluded_wallets(excluded)
-    return {"address": address, "status": "removed", **removed}
-
-
-@app.post("/api/classify-wallet/{address:path}")
-def classify_wallet(address: str):
-    """Classify a wallet address using DeBank. Auto-excludes protocols/contracts."""
-    address = address.lower()
-    print(f"[Classify] Request for {address}")
-
-    # Check if already classified (cache hit)
-    classified = load_excluded_wallets()
-    if address in classified:
-        print(f"[Classify] Cache hit for {address}: {classified[address]['label']}")
-        return {"address": address, "cached": True, **classified[address]}
-
-    print(f"[Classify] Cache miss, calling DeBank for {address}")
-    # Classify using DeBank
-    classification = classify_wallet_address(address)
-
-    # Save ALL classification results as cache (both excluded and personal)
-    is_excluded = classification.get("is_excluded", False)
-    classified[address] = {
-        "is_excluded": is_excluded,
-        "label": classification.get("label", "unknown"),
-        "name": classification.get("name", ""),
-        "reason": classification.get("reasoning", ""),
-        "source": "debank",
-        "classified_at": datetime.now(timezone.utc).isoformat(),
-    }
-    save_excluded_wallets(classified)
-
-    print(f"[Classify] Classified {address} as {classified[address]['label']} (excluded: {is_excluded})")
-    return {"address": address, "cached": False, **classified[address]}
-
-
 def format_tx_for_frontend(tx: dict) -> dict:
     """Format a transaction for display in the frontend."""
     tx_type = tx.get("tx_type", "?")
@@ -2716,7 +2384,7 @@ def format_tx_for_frontend(tx: dict) -> dict:
     if tx_type == "swap":
         result["description"] = (
             f"Swap {fmt_amount(tx.get('token0_amount', 0))} {tx.get('token0_symbol', '?')} "
-            f"→ {fmt_amount(tx.get('token1_amount', 0))} {tx.get('token1_symbol', '?')}"
+            f"в†’ {fmt_amount(tx.get('token1_amount', 0))} {tx.get('token1_symbol', '?')}"
         )
         result["usd"] = fmt_usd(max(
             tx.get("token0_amount_usd", 0) or 0,
@@ -2737,10 +2405,10 @@ def format_tx_for_frontend(tx: dict) -> dict:
         frm = tx.get("from", "")
         to = tx.get("to", "")
         if not from_label and frm:
-            from_label = f"{frm[:6]}…{frm[-4:]}"
+            from_label = f"{frm[:6]}вЂ¦{frm[-4:]}"
         if not to_label and to:
-            to_label = f"{to[:6]}…{to[-4:]}"
-        result["description"] = f"Transfer {fmt_amount(amt)} {sym}: {from_label} → {to_label}"
+            to_label = f"{to[:6]}вЂ¦{to[-4:]}"
+        result["description"] = f"Transfer {fmt_amount(amt)} {sym}: {from_label} в†’ {to_label}"
         result["usd"] = fmt_usd(usd)
         result["platform"] = ""
     elif tx_type == "lp":
@@ -2758,7 +2426,7 @@ def format_tx_for_frontend(tx: dict) -> dict:
         to_chain = tx.get("to_chain", "?") or "?"
         result["description"] = (
             f"Bridge {fmt_amount(tx.get('amount', 0))} {tx.get('token_symbol', '?')} "
-            f"{from_chain} → {to_chain}"
+            f"{from_chain} в†’ {to_chain}"
         )
         result["usd"] = fmt_usd(tx.get("amount_usd", 0) or 0)
         result["platform"] = tx.get("platform", "") or ""
@@ -3114,25 +2782,6 @@ def get_refresh_status(
     return status
 
 
-@app.get("/api/classify-status/{wallet}")
-def get_classify_status(
-    wallet: str,
-    current_user: User = Depends(get_current_user),
-    db: Database = Depends(get_db)
-):
-    """Check classification progress for related wallets of a wallet (user must own it)."""
-    wallet_lower = wallet.lower()
-
-    # Check ownership
-    if not check_wallet_ownership(db, current_user.id, wallet_lower):
-        raise HTTPException(status_code=403, detail="Wallet not found in your list")
-
-    task_key = f"classify_{wallet_lower}"
-    user_refresh_tasks = load_refresh_status(current_user.id)
-    status = user_refresh_tasks.get(task_key, {"status": "idle", "detail": "", "progress": "0/0"})
-    return status
-
-
 @app.get("/api/active-tasks")
 def get_active_tasks(current_user: User = Depends(get_current_user), db: Database = Depends(get_db)):
     """Get active refresh tasks for current user (only for wallets user still owns)."""
@@ -3141,160 +2790,9 @@ def get_active_tasks(current_user: User = Depends(get_current_user), db: Databas
     active = {
         wallet: status
         for wallet, status in user_refresh_tasks.items()
-        if status.get("status") in ("cost_estimate", "fetching", "analyzing", "classifying")
+        if status.get("status") in ("cost_estimate", "fetching", "analyzing")
     }
     return active
-
-
-@app.get("/api/related-wallets/{wallet}")
-def get_related_wallets(
-    wallet: str,
-    current_user: User = Depends(get_current_user),
-    db: Database = Depends(get_db)
-):
-    """Find wallets that have bidirectional transfers with this wallet. Data is shared globally (cached)."""
-    wallet = wallet.lower()
-
-    # Security: only allow viewing if user owns wallet
-    if not check_wallet_ownership(db, current_user.id, wallet):
-        raise HTTPException(status_code=403, detail="Wallet not found in your list")
-
-    raw_txs = load_transactions(wallet)
-
-    # If no transaction data, return 404
-    if not raw_txs:
-        raise HTTPException(status_code=404, detail="No transaction data found")
-
-    txs = filter_transactions(raw_txs)
-
-    # Track outgoing and incoming transfers
-    sent_to: dict[str, list] = {}
-    received_from: dict[str, list] = {}
-
-    for tx in txs:
-        if tx.get("tx_type") != "transfer":
-            continue
-
-        frm = (tx.get("from") or "").lower()
-        to = (tx.get("to") or "").lower()
-        sym = tx.get("symbol", tx.get("token_symbol", "?"))
-        amt = tx.get("amount", tx.get("token_amount", 0))
-        usd = tx.get("amount_usd", tx.get("token_amount_usd", 0)) or 0
-        ts = tx.get("timestamp", 0)
-
-        transfer_info = {"timestamp": ts, "amount_usd": usd, "symbol": sym, "amount": amt}
-
-        if frm == wallet and to and to != wallet:
-            sent_to.setdefault(to, []).append(transfer_info)
-        elif to == wallet and frm and frm != wallet:
-            received_from.setdefault(frm, []).append(transfer_info)
-
-    # Find bidirectional wallets (sent TO and received FROM)
-    related = []
-    bidirectional_addrs = set(sent_to.keys()) & set(received_from.keys())
-
-    for addr in bidirectional_addrs:
-        s_txs = sent_to[addr]
-        r_txs = received_from[addr]
-
-        all_timestamps = [t["timestamp"] for t in s_txs + r_txs]
-        total_usd_sent = sum(t["amount_usd"] for t in s_txs)
-        total_usd_received = sum(t["amount_usd"] for t in r_txs)
-
-        # Collect unique tokens
-        tokens_sent = list({t["symbol"] for t in s_txs})
-        tokens_received = list({t["symbol"] for t in r_txs})
-
-        related.append({
-            "address": addr,
-            "sent_count": len(s_txs),
-            "received_count": len(r_txs),
-            "total_transfers": len(s_txs) + len(r_txs),
-            "total_usd_sent": round(total_usd_sent, 2),
-            "total_usd_received": round(total_usd_received, 2),
-            "tokens_sent": tokens_sent,
-            "tokens_received": tokens_received,
-            "first_interaction": min(all_timestamps) if all_timestamps else 0,
-            "last_interaction": max(all_timestamps) if all_timestamps else 0,
-        })
-
-    related.sort(key=lambda x: x["total_transfers"], reverse=True)
-
-    # Filter out excluded wallets and attach classification data
-    classified = load_excluded_wallets()
-    print(f"[Related] Wallet {wallet}: found {len(related)} related, {len(classified)} in cache")
-
-    filtered_related = []
-    excluded_in_results = []
-    cached_count = 0
-    for rw in related:
-        entry = classified.get(rw["address"])
-        if entry and entry.get("is_excluded", False):
-            excluded_in_results.append({**rw, "exclusion": entry})
-        else:
-            # Attach classification if cached (even for non-excluded)
-            if entry:
-                rw["classification"] = entry
-                cached_count += 1
-            filtered_related.append(rw)
-
-    print(f"[Related] Returning {len(filtered_related)} related ({cached_count} with classification), {len(excluded_in_results)} excluded")
-
-    return {
-        "wallet": wallet,
-        "related_count": len(filtered_related),
-        "related_wallets": filtered_related,
-        "excluded_count": len(excluded_in_results),
-        "excluded_wallets": excluded_in_results,
-    }
-
-
-@app.get("/api/related-transactions/{wallet}")
-def get_related_transactions(
-    wallet: str,
-    counterparty: str,
-    direction: str = "all",
-    current_user: User = Depends(get_current_user),
-    db: Database = Depends(get_db)
-):
-    """Get transfer transactions between wallet and a specific counterparty. Data is shared globally (cached)."""
-    wallet = wallet.lower()
-    counterparty = counterparty.lower()
-
-    # Security: only allow viewing if user owns wallet
-    if not check_wallet_ownership(db, current_user.id, wallet):
-        raise HTTPException(status_code=403, detail="Wallet not found in your list")
-
-    raw_txs = load_transactions(wallet)
-
-    # If no transaction data, return 404
-    if not raw_txs:
-        raise HTTPException(status_code=404, detail="No transaction data found")
-
-    txs = filter_transactions(raw_txs)
-    result = []
-
-    for tx in txs:
-        if tx.get("tx_type") != "transfer":
-            continue
-
-        frm = (tx.get("from") or "").lower()
-        to = (tx.get("to") or "").lower()
-
-        is_sent = frm == wallet and to == counterparty
-        is_received = to == wallet and frm == counterparty
-
-        if direction == "sent" and not is_sent:
-            continue
-        if direction == "received" and not is_received:
-            continue
-        if direction == "all" and not (is_sent or is_received):
-            continue
-
-        result.append(format_tx_for_frontend(tx))
-
-    result.sort(key=lambda x: x.get("timestamp", 0))
-    return result
 
 
 # Serve frontend static files (for production)
@@ -3304,9 +2802,9 @@ if FRONTEND_DIST.exists():
     # Mount static files with html=True for SPA routing
     # This automatically serves index.html for non-existent paths (SPA routing)
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="static")
-    print("✅ Frontend static files mounted from:", FRONTEND_DIST)
+    print("вњ… Frontend static files mounted from:", FRONTEND_DIST)
 else:
-    print("⚠️  Frontend dist folder not found. Running in API-only mode.")
+    print("вљ пёЏ  Frontend dist folder not found. Running in API-only mode.")
 
 
 if __name__ == "__main__":

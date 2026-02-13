@@ -2,7 +2,6 @@ requests
 python-dotenv
 fastapi
 uvicorn
-playwright==1.48.0
 
 # Authentication dependencies
 PyJWT==2.8.0

@@ -1,124 +1,19 @@
 ﻿import { useState, useEffect, useCallback, useRef } from 'react'
 import './App.css'
 import WalletSidebar from './components/WalletSidebar'
-import ReportView, { TxRow } from './components/ReportView'
+import ReportView from './components/ReportView'
 import ProfileView from './components/ProfileView'
 import PortfolioView from './components/PortfolioView'
 import PaymentWidget from './components/PaymentWidget'
 import LoginPage from './components/LoginPage'
 import { apiCall, setAuthToken, getUser, logout } from './utils/api'
 
-const RUNNING_TASK_STATUSES = new Set(['fetching', 'analyzing', 'classifying'])
-const KNOWN_TASK_STATUSES = new Set(['cost_estimate', 'fetching', 'analyzing', 'classifying'])
+const RUNNING_TASK_STATUSES = new Set(['fetching', 'analyzing'])
+const KNOWN_TASK_STATUSES = new Set(['cost_estimate', 'fetching', 'analyzing'])
 
 function countSections(markdown) {
   if (!markdown) return 0
   return (markdown.match(/^### /gm) || []).length
-}
-
-function RelatedCard({ rw, mainWallet, classificationOverride, classifyingNow }) {
-  const [expandedDir, setExpandedDir] = useState(null) // 'sent' | 'received' | null
-  const [txs, setTxs] = useState(null)
-  const [txLoading, setTxLoading] = useState(false)
-
-  // Use override from parent (auto-classify queue) or server-cached data
-  const classification = classificationOverride || rw.classification || null
-
-  const toggleTxs = async (direction) => {
-    if (expandedDir === direction) {
-      setExpandedDir(null)
-      return
-    }
-    setExpandedDir(direction)
-    setTxLoading(true)
-    setTxs(null)
-    try {
-      const res = await fetch(
-        `/api/related-transactions/${mainWallet}?counterparty=${rw.address}&direction=${direction}`
-      )
-      if (res.ok) {
-        setTxs(await res.json())
-      } else {
-        setTxs([])
-      }
-    } catch {
-      setTxs([])
-    } finally {
-      setTxLoading(false)
-    }
-  }
-
-  return (
-    <div className="related-card">
-      <div className="related-card-top">
-        <span className="related-card-address">
-          {rw.address.slice(0, 10)}...{rw.address.slice(-6)}
-        </span>
-        <div className="related-card-top-right">
-          <span className="related-card-total">
-            {rw.total_transfers} transfers
-          </span>
-          {classifyingNow && (
-            <span className="classification-badge classification-loading">...</span>
-          )}
-        </div>
-      </div>
-
-      {classification && (
-        <div className="related-classification">
-          <span className={`classification-badge classification-${classification.label}`}>
-            {classification.label}
-          </span>
-          {classification.name && <span className="classification-name">{classification.name}</span>}
-        </div>
-      )}
-
-      <div className="related-card-stats">
-        <div className="related-stat">
-          <span className="related-stat-label">Sent</span>
-          <span
-            className={`related-stat-value related-stat-sent related-stat-clickable ${expandedDir === 'sent' ? 'related-stat-active' : ''}`}
-            onClick={() => toggleTxs('sent')}
-          >
-            {rw.sent_count}x &middot; ${rw.total_usd_sent.toLocaleString()}
-          </span>
-          <span className="related-stat-tokens">
-            {rw.tokens_sent.join(', ')}
-          </span>
-        </div>
-        <div className="related-stat">
-          <span className="related-stat-label">Received</span>
-          <span
-            className={`related-stat-value related-stat-recv related-stat-clickable ${expandedDir === 'received' ? 'related-stat-active' : ''}`}
-            onClick={() => toggleTxs('received')}
-          >
-            {rw.received_count}x &middot; ${rw.total_usd_received.toLocaleString()}
-          </span>
-          <span className="related-stat-tokens">
-            {rw.tokens_received.join(', ')}
-          </span>
-        </div>
-      </div>
-
-      {expandedDir && (
-        <div className="related-tx-list">
-          {txLoading && <div className="related-tx-loading">Loading...</div>}
-          {txs && txs.length === 0 && (
-            <div className="related-tx-empty">No transactions found</div>
-          )}
-          {txs && txs.map((tx, i) => (
-            <TxRow key={tx.tx_hash || i} tx={tx} />
-          ))}
-        </div>
-      )}
-
-      <div className="related-card-dates">
-        {new Date(rw.first_interaction * 1000).toLocaleDateString('en-US')}
-        {' вЂ” '}
-        {new Date(rw.last_interaction * 1000).toLocaleDateString('en-US')}
-      </div>
-    </div>
-  )
 }
 
 function AdminBackupView({
@@ -294,25 +189,6 @@ function App() {
   const [portfolio, setPortfolio] = useState(null)
   const [portfolioLoading, setPortfolioLoading] = useState(false)
 
-  // Related wallets modal
-  const [relatedData, setRelatedData] = useState(null)
-  const [relatedLoading, setRelatedLoading] = useState(false)
-  const [relatedWallet, setRelatedWallet] = useState('')
-  const [showExcluded, setShowExcluded] = useState(false)
-
-  // Auto-classification queue for related wallets
-  const [classResults, setClassResults] = useState(() => {
-    // Load from localStorage on mount
-    try {
-      const saved = localStorage.getItem('wallet_classification_cache')
-      return saved ? JSON.parse(saved) : {}
-    } catch {
-      return {}
-    }
-  }) // address в†’ classification
-  const [classifyingAddrs, setClassifyingAddrs] = useState([]) // currently classifying (batch)
-  const [batchSize, setBatchSize] = useState(3) // default, will be loaded from settings
-
   // Check auth on mount
   useEffect(() => {
     const checkAuth = async () => {
@@ -360,32 +236,9 @@ function App() {
     loadBalance()
   }, [user])
 
-  // Save classResults to localStorage whenever it changes
-  useEffect(() => {
-    try {
-      localStorage.setItem('wallet_classification_cache', JSON.stringify(classResults))
-    } catch (err) {
-      console.error('Failed to save classification cache:', err)
-    }
-  }, [classResults])
-
   useEffect(() => {
     activeTasksRef.current = activeTasks
   }, [activeTasks])
-
-  // Load settings on mount (only if authenticated)
-  useEffect(() => {
-    if (!user) return
-
-    apiCall('/api/settings')
-      .then(res => res && res.ok ? res.json() : null)
-      .then(data => {
-        if (data?.auto_classify_batch_size) {
-          setBatchSize(data.auto_classify_batch_size)
-        }
-      })
-      .catch(() => {})
-  }, [user])
 
   const requestProfileCostConfirmation = useCallback(({ wallet, model, estimatedCostUsd }) => {
     return new Promise((resolve) => {
@@ -465,101 +318,6 @@ function App() {
       }
     }
   }, [])
-
-  // Batch auto-classify: when relatedData loads, classify unclassified wallets in batches
-  useEffect(() => {
-    if (!relatedData?.related_wallets) return
-
-    let cancelled = false
-    const classify = async () => {
-      const unclassified = relatedData.related_wallets.filter(
-        rw => !rw.classification && !classResults[rw.address]
-      )
-
-      console.log('[Auto-classify] Total wallets:', relatedData.related_wallets.length)
-      console.log('[Auto-classify] Already classified:', relatedData.related_wallets.filter(rw => rw.classification).length)
-      console.log('[Auto-classify] Cached results:', Object.keys(classResults).length)
-      console.log('[Auto-classify] To classify:', unclassified.length)
-
-      if (unclassified.length === 0) {
-        console.log('[Auto-classify] Nothing to classify, skipping')
-        return
-      }
-
-      // Process in batches
-      for (let i = 0; i < unclassified.length; i += batchSize) {
-        if (cancelled) break
-
-        const batch = unclassified.slice(i, i + batchSize)
-        const batchAddrs = batch.map(rw => rw.address)
-        console.log(`[Auto-classify] Processing batch ${Math.floor(i / batchSize) + 1}:`, batchAddrs)
-        setClassifyingAddrs(batchAddrs)
-
-        // Process batch in parallel with timeout
-        const results = await Promise.allSettled(
-          batch.map(async (rw) => {
-            const controller = new AbortController()
-            const timeout = setTimeout(() => controller.abort(), 30000) // 30s timeout
-
-            try {
-              console.log('[Auto-classify] Classifying:', rw.address)
-              const res = await apiCall(`/api/classify-wallet/${rw.address}`, {
-                method: 'POST',
-                signal: controller.signal
-              })
-              clearTimeout(timeout)
-
-              if (res && res.ok) {
-                const data = await res.json()
-                console.log('[Auto-classify] Result for', rw.address, ':', data.label, data.is_excluded)
-                return { address: rw.address, data }
-              }
-              console.warn('[Auto-classify] Failed for', rw.address, ':', res ? res.status : 'no response')
-              return null
-            } catch (err) {
-              clearTimeout(timeout)
-              console.error('[Auto-classify] Error for', rw.address, ':', err.message)
-              return null
-            }
-          })
-        )
-
-        if (cancelled) break
-
-        // Update results and check if any were excluded
-        let hasExcluded = false
-        results.forEach(result => {
-          if (result.status === 'fulfilled' && result.value) {
-            const { address, data } = result.value
-            setClassResults(prev => ({ ...prev, [address]: data }))
-            if (data.is_excluded) hasExcluded = true
-          }
-        })
-
-        // If any were excluded, refresh the list
-        if (hasExcluded && !cancelled) {
-          console.log('[Auto-classify] Some wallets excluded, refreshing list')
-          setClassifyingAddrs([])
-          await new Promise(r => setTimeout(r, 300))
-          if (!cancelled) {
-            const refreshRes = await apiCall(`/api/related-wallets/${relatedWallet.toLowerCase()}`)
-            if (refreshRes && refreshRes.ok) {
-              const refreshed = await refreshRes.json()
-              setRelatedData(refreshed)
-            }
-          }
-          return // restart with refreshed data
-        }
-      }
-      if (!cancelled) {
-        console.log('[Auto-classify] Batch processing complete')
-        setClassifyingAddrs([])
-      }
-    }
-
-    classify()
-    return () => { cancelled = true }
-  }, [relatedData, batchSize]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Track which sections are NEW (by original index in markdown)
   const [oldSectionCount, setOldSectionCount] = useState(null)
@@ -870,40 +628,6 @@ function App() {
       setPortfolioLoading(false)
     }
   }, [])
-
-  const fetchRelatedWallets = useCallback(async (wallet) => {
-    if (!wallet) return
-    setRelatedWallet(wallet)
-    setRelatedLoading(true)
-    setRelatedData(null)
-    try {
-      const res = await apiCall(`/api/related-wallets/${wallet.toLowerCase()}`)
-      if (!res || !res.ok) throw new Error('Failed to load related wallets')
-      const data = await res.json()
-      setRelatedData(data)
-    } catch (err) {
-      setRelatedData({ error: err.message })
-    } finally {
-      setRelatedLoading(false)
-    }
-  }, [])
-
-  const closeRelatedModal = () => {
-    setRelatedData(null)
-    setRelatedWallet('')
-    setShowExcluded(false)
-    // Keep classResults to avoid re-classifying on modal reopen
-    setClassifyingAddrs([])
-  }
-
-  const handleRestoreWallet = useCallback(async (address) => {
-    try {
-      const res = await apiCall(`/api/excluded-wallets/${address}`, { method: 'DELETE' })
-      if (res && res.ok && relatedWallet) {
-        fetchRelatedWallets(relatedWallet)
-      }
-    } catch { /* ignore */ }
-  }, [relatedWallet, fetchRelatedWallets])
 
   // Refresh balance
   const refreshBalance = useCallback(async () => {
@@ -1482,9 +1206,7 @@ function App() {
         if (isMobileLayout) {
           setMobileSidebarOpen(false)
         }
-        if (actionId === 'related') {
-          fetchRelatedWallets(wallet)
-        } else if (actionId === 'profile') {
+        if (actionId === 'profile') {
           loadProfile(wallet)
         } else if (actionId === 'analysis') {
           loadPortfolio(wallet)
@@ -1685,15 +1407,6 @@ function App() {
                               </div>
                               <span className="task-percent">{task.percent}%</span>
                             </div>
-                          )}
-                        </div>
-                      )}
-                      {task.status === 'classifying' && (
-                        <div className="task-status-classifying">
-                          <span className="task-spinner" aria-hidden="true"></span>
-                          <span className="task-label">Classifying wallets</span>
-                          {task.progress && (
-                            <span className="task-detail">{task.progress}</span>
                           )}
                         </div>
                       )}
