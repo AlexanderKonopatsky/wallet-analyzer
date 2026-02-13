@@ -1,8 +1,6 @@
 import os
 import threading
 import math
-import json
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -47,11 +45,6 @@ def create_analysis_router(
     background_refresh: Callable[[str, int], None],
 ) -> APIRouter:
     router = APIRouter()
-    # Lightweight per-wallet cache for day activity summaries.
-    # key: wallet -> {"mtime": float, "summary": dict}
-    activity_summary_cache: dict[str, dict] = {}
-    wallet_chains_dir = data_dir / "wallet_chains"
-    wallet_chains_dir.mkdir(parents=True, exist_ok=True)
 
     def ensure_wallet_access(
         *,
@@ -318,162 +311,6 @@ def create_analysis_router(
             result[day] = [format_tx_for_frontend(tx) for tx in day_txs]
 
         return result
-
-    def build_wallet_chains_index(wallet: str, data_file: Path) -> dict:
-        """Build and persist a lightweight chain list index for a wallet."""
-        raw_txs = load_transactions(wallet)
-        txs = filter_transactions(raw_txs)
-
-        chains = set()
-        for tx in txs:
-            for chain_key in ("chain", "from_chain", "to_chain"):
-                chain_val = tx.get(chain_key)
-                if not isinstance(chain_val, str):
-                    continue
-                chain_clean = chain_val.strip().lower()
-                if chain_clean and chain_clean != "?":
-                    chains.add(chain_clean)
-
-        payload = {
-            "wallet": wallet,
-            "chains": sorted(chains),
-            "data_mtime": data_file.stat().st_mtime,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-        }
-
-        index_file = wallet_chains_dir / f"{wallet}.json"
-        with open(index_file, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
-
-        return payload
-
-    def load_or_build_wallet_chains_index(wallet: str, data_file: Path) -> dict:
-        """Load wallet chain index from file or rebuild when stale/missing."""
-        index_file = wallet_chains_dir / f"{wallet}.json"
-        data_mtime = data_file.stat().st_mtime
-
-        if index_file.exists():
-            try:
-                with open(index_file, "r", encoding="utf-8") as f:
-                    payload = json.load(f)
-                indexed_mtime = float(payload.get("data_mtime", 0.0) or 0.0)
-                if abs(indexed_mtime - data_mtime) < 1e-6 and isinstance(payload.get("chains"), list):
-                    return payload
-            except Exception:
-                pass
-
-        return build_wallet_chains_index(wallet, data_file)
-
-    @router.get("/api/day-activity/{wallet}")
-    def get_day_activity(
-        wallet: str,
-        current_user: User | None = Depends(get_optional_user),
-        db: Database = Depends(get_db),
-    ):
-        """Get lightweight activity summary used by day filters.
-
-        Response shape:
-        {
-          "chains": ["arbitrum", "base", ...],  # all chains wallet interacted with
-          "by_day": {
-            "YYYY-MM-DD": {
-              "chains": [...],
-              "max_volume_usd": 123.45
-            }
-          }
-        }
-        """
-        wallet = wallet.lower()
-        data_file = data_dir / f"{wallet}.json"
-
-        if current_user is None:
-            if wallet != PUBLIC_DEMO_WALLET:
-                raise HTTPException(status_code=401, detail="Not authenticated")
-        else:
-            ensure_wallet_access(
-                db=db,
-                user_id=current_user.id,
-                wallet=wallet,
-                can_auto_attach=data_file.exists(),
-            )
-
-        if not data_file.exists():
-            raise HTTPException(status_code=404, detail="No transaction data found")
-
-        file_mtime = data_file.stat().st_mtime
-        cached = activity_summary_cache.get(wallet)
-        if cached and cached.get("mtime") == file_mtime:
-            return cached.get("summary", {})
-
-        raw_txs = load_transactions(wallet)
-        if not raw_txs:
-            raise HTTPException(status_code=404, detail="No transaction data found")
-
-        txs = filter_transactions(raw_txs)
-        day_groups = group_by_days(txs)
-
-        result = {}
-        all_chains = set()
-        for day, day_txs in day_groups.items():
-            chains = set()
-            max_volume_usd = 0.0
-
-            for tx in day_txs:
-                for chain_key in ("chain", "from_chain", "to_chain"):
-                    chain_val = tx.get(chain_key)
-                    if isinstance(chain_val, str):
-                        chain_clean = chain_val.strip().lower()
-                        if chain_clean and chain_clean != "?":
-                            chains.add(chain_clean)
-                            all_chains.add(chain_clean)
-
-                volume_usd = get_tx_usd(tx)
-                if not math.isfinite(volume_usd):
-                    volume_usd = 0.0
-                if volume_usd > max_volume_usd:
-                    max_volume_usd = volume_usd
-
-            result[day] = {
-                "chains": sorted(chains),
-                "max_volume_usd": max_volume_usd,
-            }
-
-        summary = {
-            "chains": sorted(all_chains),
-            "by_day": result,
-        }
-        activity_summary_cache[wallet] = {"mtime": file_mtime, "summary": summary}
-        return summary
-
-    @router.get("/api/wallet-chains/{wallet}")
-    def get_wallet_chains(
-        wallet: str,
-        current_user: User | None = Depends(get_optional_user),
-        db: Database = Depends(get_db),
-    ):
-        """Get all chains the wallet interacted with from a persisted index file."""
-        wallet = wallet.lower()
-        data_file = data_dir / f"{wallet}.json"
-
-        if current_user is None:
-            if wallet != PUBLIC_DEMO_WALLET:
-                raise HTTPException(status_code=401, detail="Not authenticated")
-        else:
-            ensure_wallet_access(
-                db=db,
-                user_id=current_user.id,
-                wallet=wallet,
-                can_auto_attach=data_file.exists(),
-            )
-
-        if not data_file.exists():
-            raise HTTPException(status_code=404, detail="No transaction data found")
-
-        payload = load_or_build_wallet_chains_index(wallet, data_file)
-        return {
-            "wallet": wallet,
-            "chains": payload.get("chains", []),
-        }
 
     @router.post("/api/estimate-cost/{wallet}")
     def estimate_cost(
