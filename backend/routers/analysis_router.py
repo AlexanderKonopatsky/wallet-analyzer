@@ -1,6 +1,5 @@
 import os
 import threading
-import math
 from pathlib import Path
 from typing import Callable
 
@@ -11,7 +10,6 @@ from analyze import (
     fmt_amount,
     fmt_ts,
     fmt_usd,
-    get_tx_usd,
     group_by_days,
     load_transactions,
 )
@@ -47,9 +45,6 @@ def create_analysis_router(
         chain = tx.get("chain", "?")
         tx_hash = tx.get("tx_hash", "")
         timestamp = tx.get("timestamp", 0)
-        volume_usd = get_tx_usd(tx)
-        if not math.isfinite(volume_usd):
-            volume_usd = 0.0
 
         explorer_base = chain_explorers.get(chain, "")
         explorer_url = f"{explorer_base}{tx_hash}" if explorer_base and tx_hash else ""
@@ -61,7 +56,6 @@ def create_analysis_router(
             "timestamp": timestamp,
             "time": fmt_ts(timestamp),
             "explorer_url": explorer_url,
-            "volume_usd": volume_usd,
         }
 
         if tx_type == "swap":
