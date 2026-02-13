@@ -260,11 +260,12 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
   const renderWalletCard = (w) => {
     const addr = w.address.toLowerCase()
     const isActive = addr === selectedWallet
+    const isEditing = editingAddr === addr
 
     return (
       <div
         key={addr}
-        className={`wallet-card${isActive ? ' active' : ''}`}
+        className={`wallet-card${isActive ? ' active' : ''}${isEditing ? ' editing' : ''}`}
         draggable
         onDragStart={(e) => handleDragStart(e, w)}
         onDragEnd={handleDragEnd}
@@ -285,7 +286,7 @@ function WalletSidebar({ wallets, selectedWallet, onSelect, onAction, onSaveTag,
           ×
         </button>
         <div className="wallet-card-top">
-          {editingAddr === addr ? (
+          {isEditing ? (
             <div className="wallet-card-tag-edit" onClick={e => e.stopPropagation()}>
               <input
                 type="text"
