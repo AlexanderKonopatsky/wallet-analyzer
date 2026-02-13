@@ -94,7 +94,6 @@ def create_profiles_router(
     profile_system_prompt: str,
 ) -> APIRouter:
     router = APIRouter()
-    report_parse_cache: dict[str, dict] = {}
 
     def ensure_wallet_access(
         *,
@@ -113,25 +112,6 @@ def create_profiles_router(
                 return
 
         raise HTTPException(status_code=403, detail="Wallet not found in your list")
-
-    def load_or_parse_report(wallet: str, report_path: Path) -> dict:
-        """Load parsed report sections from process-local cache or rebuild by file mtime."""
-        report_mtime = report_path.stat().st_mtime
-        cached = report_parse_cache.get(wallet)
-        if cached and abs(float(cached.get("mtime", 0.0) or 0.0) - report_mtime) < 1e-6:
-            return cached
-
-        markdown = report_path.read_text(encoding="utf-8")
-        sections, fingerprints = _parse_report_sections(markdown)
-        payload = {
-            "mtime": report_mtime,
-            "markdown": markdown,
-            "sections": sections,
-            "fingerprints": fingerprints,
-            "calendar_sections": _build_calendar_sections(sections),
-        }
-        report_parse_cache[wallet] = payload
-        return payload
 
     @router.get("/api/report/{wallet}")
     def get_report(
@@ -159,11 +139,9 @@ def create_profiles_router(
                 can_auto_attach=True,
             )
 
-        cached_report = load_or_parse_report(wallet, report_path)
-        markdown = cached_report["markdown"]
-        sections = cached_report["sections"]
-        fingerprints = cached_report["fingerprints"]
-        calendar_sections = cached_report["calendar_sections"]
+        markdown = report_path.read_text(encoding="utf-8")
+        sections, fingerprints = _parse_report_sections(markdown)
+        calendar_sections = _build_calendar_sections(sections)
         total_sections = len(sections)
         meta = get_wallet_meta(wallet)
 

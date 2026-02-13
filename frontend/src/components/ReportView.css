@@ -64,40 +64,6 @@
   color: #8b949e;
 }
 
-.day-filters-toggle-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
-}
-
-.day-filters-toggle {
-  border: 1px solid #2b3442;
-  background: #101722;
-  color: #8b949e;
-  border-radius: 999px;
-  padding: 5px 11px;
-  font-size: 0.73rem;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.day-filters-toggle:hover {
-  color: #c9d1d9;
-  border-color: #4d596a;
-}
-
-.day-filters-toggle-open {
-  color: #dff0ff;
-  border-color: #3f6c9f;
-  background: #18263a;
-}
-
-.day-filters-loading {
-  color: #8b949e;
-  font-size: 0.74rem;
-}
-
 .day-filters {
   margin-bottom: 14px;
   padding: 8px 10px;
@@ -580,10 +546,6 @@
   .day-filters {
     padding: 8px 10px;
     margin-bottom: 12px;
-  }
-
-  .day-filters-toggle-row {
-    margin-bottom: 8px;
   }
 
   .day-filters-row {

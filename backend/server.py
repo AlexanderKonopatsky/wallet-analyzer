@@ -17,7 +17,7 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True)
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -119,17 +119,12 @@ PROJECT_ROOT = Path(__file__).parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 # Store reports inside data/ for Railway single volume
 REPORTS_DIR = DATA_DIR / "reports"
-INDEX_DIR = DATA_DIR / "index"
-WALLET_META_INDEX_DIR = INDEX_DIR / "wallet_meta"
 
 # Ensure directories exist at startup
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-INDEX_DIR.mkdir(parents=True, exist_ok=True)
-WALLET_META_INDEX_DIR.mkdir(parents=True, exist_ok=True)
 print(f"[Init] Data directory: {DATA_DIR} (exists: {DATA_DIR.exists()})")
 print(f"[Init] Reports directory: {REPORTS_DIR} (exists: {REPORTS_DIR.exists()})")
-print(f"[Init] Index directory: {INDEX_DIR} (exists: {INDEX_DIR.exists()})")
 DATA_BACKUP_ARCHIVE_DIR = DATA_DIR / "backups"
 DATA_BACKUP_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 DATA_BACKUP_ADMIN_EMAILS = {
@@ -169,53 +164,6 @@ refresh_tasks: dict[str, dict] = {}
 # Active threads: {wallet: Thread object}
 active_threads: dict[str, threading.Thread] = {}
 
-PERF_SLOW_REQUEST_MS = max(1, int(os.getenv("PERF_SLOW_REQUEST_MS", "300")))
-PERF_DEBUG_HEADERS = os.getenv("PERF_DEBUG_HEADERS", "false").lower() in ("1", "true", "yes")
-
-
-def _wallet_meta_index_path(wallet: str) -> Path:
-    return WALLET_META_INDEX_DIR / f"{wallet.lower()}.json"
-
-
-def _write_wallet_meta_index(wallet: str, data: dict, data_mtime: float) -> None:
-    """Write lightweight wallet metadata index for fast API reads."""
-    payload = {
-        "wallet": wallet.lower(),
-        "address": data.get("wallet", wallet),
-        "last_updated": data.get("last_updated"),
-        "tx_count": len(data.get("transactions", [])),
-        "data_mtime": data_mtime,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    with open(_wallet_meta_index_path(wallet), "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-
-
-@app.middleware("http")
-async def perf_timing_middleware(request: Request, call_next):
-    start = time.perf_counter()
-
-    try:
-        response = await call_next(request)
-    except Exception:
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        if elapsed_ms >= PERF_SLOW_REQUEST_MS:
-            print(
-                f"[Perf] {request.method} {request.url.path} status=error duration_ms={elapsed_ms:.1f}",
-                flush=True,
-            )
-        raise
-
-    elapsed_ms = (time.perf_counter() - start) * 1000
-    if PERF_DEBUG_HEADERS:
-        response.headers["Server-Timing"] = f"app;dur={elapsed_ms:.1f}"
-    if elapsed_ms >= PERF_SLOW_REQUEST_MS:
-        print(
-            f"[Perf] {request.method} {request.url.path} status={response.status_code} duration_ms={elapsed_ms:.1f}",
-            flush=True,
-        )
-    return response
-
 
 def check_wallet_ownership(db: Database, user_id: int, wallet_address: str) -> bool:
     """Check if user owns this wallet."""
@@ -244,38 +192,14 @@ def has_running_background_tasks() -> bool:
 
 
 def get_wallet_meta(wallet: str) -> dict:
-    """Read wallet metadata from index with fallback to data file."""
-    wallet_lower = wallet.lower()
+    """Read wallet metadata from data file."""
     filepath = DATA_DIR / f"{wallet.lower()}.json"
     if not filepath.exists():
         return None
-
-    data_mtime = filepath.stat().st_mtime
-    index_path = _wallet_meta_index_path(wallet_lower)
-    if index_path.exists():
-        try:
-            with open(index_path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
-            indexed_mtime = float(payload.get("data_mtime", 0.0) or 0.0)
-            if abs(indexed_mtime - data_mtime) < 1e-6:
-                return {
-                    "address": payload.get("address", wallet_lower),
-                    "last_updated": payload.get("last_updated"),
-                    "tx_count": int(payload.get("tx_count", 0) or 0),
-                }
-        except Exception:
-            pass
-
     with open(filepath, "r", encoding="utf-8") as f:
         data = json.load(f)
-
-    try:
-        _write_wallet_meta_index(wallet_lower, data, data_mtime)
-    except Exception as exc:
-        print(f"[Index] Failed to rebuild wallet_meta index for {wallet_lower}: {exc}", flush=True)
-
     return {
-        "address": data.get("wallet", wallet_lower),
+        "address": data.get("wallet", wallet),
         "last_updated": data.get("last_updated"),
         "tx_count": len(data.get("transactions", [])),
     }

@@ -344,7 +344,6 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
   const [activityByDay, setActivityByDay] = useState(null)
   const [activityLoading, setActivityLoading] = useState(false)
   const [activityLoaded, setActivityLoaded] = useState(false)
-  const [isFiltersOpen, setIsFiltersOpen] = useState(false)
   const [walletChains, setWalletChains] = useState([])
   const [selectedChains, setSelectedChains] = useState([])
   const [volumeThresholdInput, setVolumeThresholdInput] = useState('')
@@ -516,69 +515,71 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
   }, [hasMoreDays])
 
   useEffect(() => {
-    setSelectedChains([])
-    setVolumeThresholdInput('')
-    setIsFiltersOpen(false)
-    setWalletChains([])
-    setActivityByDay(null)
-    setActivityLoading(false)
-    setActivityLoaded(false)
+    let cancelled = false
+
+    if (!walletAddress) {
+      setWalletChains([])
+      return () => {
+        cancelled = true
+      }
+    }
+
+    apiCall(`/api/wallet-chains/${encodeURIComponent(walletAddress)}`)
+      .then(res => (res && res.ok ? res.json() : null))
+      .then(data => {
+        if (cancelled) return
+        const chains = Array.isArray(data?.chains) ? data.chains : []
+        setWalletChains(chains)
+      })
+      .catch(() => {
+        if (!cancelled) setWalletChains([])
+      })
+
+    return () => {
+      cancelled = true
+    }
   }, [walletAddress])
 
   useEffect(() => {
     let cancelled = false
-    const chainsController = new AbortController()
-    const activityController = new AbortController()
 
-    if (!walletAddress || !isFiltersOpen || activityLoaded || activityLoading) {
+    if (!walletAddress) {
+      setActivityByDay(null)
+      setActivityLoading(false)
+      setActivityLoaded(false)
       return () => {
         cancelled = true
-        chainsController.abort()
-        activityController.abort()
       }
     }
 
     setActivityLoading(true)
     setActivityLoaded(false)
-
-    const loadFiltersData = async () => {
-      try {
-        const [chainsRes, activityRes] = await Promise.all([
-          apiCall(`/api/wallet-chains/${encodeURIComponent(walletAddress)}`, {
-            signal: chainsController.signal,
-          }),
-          apiCall(`/api/day-activity/${encodeURIComponent(walletAddress)}`, {
-            signal: activityController.signal,
-          }),
-        ])
-
+    apiCall(`/api/day-activity/${encodeURIComponent(walletAddress)}`)
+      .then(res => (res && res.ok ? res.json() : null))
+      .then(data => {
         if (cancelled) return
 
-        const chainsData = chainsRes && chainsRes.ok ? await chainsRes.json() : null
-        const activityData = activityRes && activityRes.ok ? await activityRes.json() : null
-        const chains = Array.isArray(chainsData?.chains) ? chainsData.chains : []
-        setWalletChains(chains)
-        setActivityByDay(activityData && typeof activityData === 'object' ? activityData : {})
-      } catch (err) {
-        if (cancelled || err?.name === 'AbortError') return
-        setWalletChains([])
-        setActivityByDay({})
-      } finally {
+        setActivityByDay(data && typeof data === 'object' ? data : {})
+      })
+      .catch(() => {
+        if (!cancelled) setActivityByDay({})
+      })
+      .finally(() => {
         if (!cancelled) {
           setActivityLoading(false)
           setActivityLoaded(true)
         }
-      }
-    }
-
-    loadFiltersData()
+      })
 
     return () => {
       cancelled = true
-      chainsController.abort()
-      activityController.abort()
     }
-  }, [walletAddress, isFiltersOpen, activityLoaded, activityLoading])
+  }, [walletAddress])
+
+  useEffect(() => {
+    setSelectedChains([])
+    setVolumeThresholdInput('')
+  }, [walletAddress])
 
   useEffect(() => {
     if (availableChains.length === 0) {
@@ -763,70 +764,55 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
         <CalendarStrip sections={filteredCalendarSections} activeDates={calendarActiveDates} />
       )}
 
-      <div className="day-filters-toggle-row">
-        <button
-          type="button"
-          className={`day-filters-toggle ${isFiltersOpen ? 'day-filters-toggle-open' : ''}`}
-          onClick={() => setIsFiltersOpen((prev) => !prev)}
-        >
-          {isFiltersOpen ? 'Hide filters' : 'Show filters'}
-        </button>
-        {isFiltersOpen && activityLoading && (
-          <span className="day-filters-loading">Loading filter data...</span>
-        )}
-      </div>
-
-      {isFiltersOpen && (
-        <div className="day-filters">
-          <div className="day-filters-row">
-            <div className="day-filter-chains">
+      <div className="day-filters">
+        <div className="day-filters-row">
+          <div className="day-filter-chains">
+            <button
+              type="button"
+              className={`day-chain-chip ${selectedChains.length === 0 ? 'day-chain-chip-active' : ''}`}
+              onClick={() => setSelectedChains([])}
+            >
+              all
+            </button>
+            {availableChains.map((chain) => (
               <button
+                key={chain.value}
                 type="button"
-                className={`day-chain-chip ${selectedChains.length === 0 ? 'day-chain-chip-active' : ''}`}
-                onClick={() => setSelectedChains([])}
+                className={`day-chain-chip ${selectedChains.includes(chain.value) ? 'day-chain-chip-active' : ''}`}
+                onClick={() => toggleChainSelection(chain.value)}
               >
-                all
+                {chain.label}
               </button>
-              {availableChains.map((chain) => (
-                <button
-                  key={chain.value}
-                  type="button"
-                  className={`day-chain-chip ${selectedChains.includes(chain.value) ? 'day-chain-chip-active' : ''}`}
-                  onClick={() => toggleChainSelection(chain.value)}
-                >
-                  {chain.label}
-                </button>
-              ))}
-            </div>
+            ))}
+          </div>
 
-            <div className="day-filters-controls">
-              <input
-                className="day-filter-volume-input"
-                type="number"
-                min="0"
-                step="0.01"
-                placeholder="min USD"
-                value={volumeThresholdInput}
-                onChange={(event) => setVolumeThresholdInput(event.target.value)}
-              />
-              {shouldApplyDayFilters && (
-                <span className="day-filters-count">{matchingDates.length}</span>
-              )}
-              <button
-                type="button"
-                className="day-filter-clear"
-                onClick={() => {
-                  setSelectedChains([])
-                  setVolumeThresholdInput('')
-                }}
-                disabled={!isAnyDayFilterActive}
-              >
-                clear
-              </button>
-            </div>
+          <div className="day-filters-controls">
+            <input
+              className="day-filter-volume-input"
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="min USD"
+              value={volumeThresholdInput}
+              onChange={(event) => setVolumeThresholdInput(event.target.value)}
+            />
+            {shouldApplyDayFilters && (
+              <span className="day-filters-count">{matchingDates.length}</span>
+            )}
+            <button
+              type="button"
+              className="day-filter-clear"
+              onClick={() => {
+                setSelectedChains([])
+                setVolumeThresholdInput('')
+              }}
+              disabled={!isAnyDayFilterActive}
+            >
+              clear
+            </button>
           </div>
         </div>
-      )}
+      </div>
 
       <div className="report-sections">
         {visibleSections.map((section, i) => (
