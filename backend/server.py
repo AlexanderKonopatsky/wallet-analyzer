@@ -4,9 +4,12 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sys
 import threading
 import time
+import tempfile
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import requests
@@ -143,6 +146,16 @@ TAGS_FILE = DATA_DIR / "wallet_tags.json"
 REFRESH_STATUS_FILE = DATA_DIR / "refresh_status.json"
 EXCLUDED_WALLETS_FILE = DATA_DIR / "excluded_wallets.json"
 HIDDEN_WALLETS_FILE = DATA_DIR / "hidden_wallets.json"
+DATA_BACKUP_ARCHIVE_DIR = DATA_DIR / "backups"
+DATA_BACKUP_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+DATA_BACKUP_ADMIN_EMAILS = {
+    email.strip().lower()
+    for email in os.getenv("DATA_BACKUP_ADMIN_EMAILS", "").split(",")
+    if email.strip()
+}
+DATA_IMPORT_MAX_MB = max(1, int(os.getenv("DATA_IMPORT_MAX_MB", "2048")))
+DATA_IMPORT_MAX_BYTES = DATA_IMPORT_MAX_MB * 1024 * 1024
+data_backup_lock = threading.Lock()
 
 # Payment settings
 ONECLICK_API_BASE = "https://1click.chaindefuser.com"
@@ -772,6 +785,109 @@ def add_user_wallet(db: Database, user_id: int, wallet_address: str):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
+def ensure_data_backup_access(current_user: User) -> None:
+    """Allow backup/import only for configured admin emails (or any user if unset)."""
+    if not DATA_BACKUP_ADMIN_EMAILS:
+        return
+    if current_user.email.lower() not in DATA_BACKUP_ADMIN_EMAILS:
+        raise HTTPException(status_code=403, detail="Backup/import access denied")
+
+
+def has_running_background_tasks() -> bool:
+    """Check if any refresh/analysis thread is currently running."""
+    return any(thread and thread.is_alive() for thread in active_threads.values())
+
+
+def create_data_backup_archive() -> Path:
+    """Create ZIP archive with full data folder and return archive path."""
+    DATA_BACKUP_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    archive_path = DATA_BACKUP_ARCHIVE_DIR / f"data_backup_{timestamp}.zip"
+
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for item in DATA_DIR.rglob("*"):
+            if item.is_dir():
+                continue
+            if item.resolve() == archive_path.resolve():
+                continue
+            rel_path = item.relative_to(DATA_DIR)
+            arcname = (Path("data") / rel_path).as_posix()
+            archive.write(item, arcname=arcname)
+
+    return archive_path
+
+
+def safe_extract_zip(archive_path: Path, target_dir: Path) -> None:
+    """Safely extract zip archive while preventing path traversal."""
+    target_root = target_dir.resolve()
+    with zipfile.ZipFile(archive_path, "r") as archive:
+        for member in archive.infolist():
+            member_name = member.filename.replace("\\", "/")
+            if not member_name or member_name.endswith("/"):
+                continue
+
+            member_path = Path(member_name)
+            if member_path.is_absolute() or ".." in member_path.parts:
+                raise HTTPException(status_code=400, detail="Archive contains unsafe paths")
+
+            output_path = (target_root / member_path).resolve()
+            if not str(output_path).startswith(str(target_root)):
+                raise HTTPException(status_code=400, detail="Archive contains unsafe paths")
+
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(member, "r") as src, open(output_path, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+
+
+def resolve_data_import_root(extract_root: Path) -> Path:
+    """Detect where imported data files are located inside extracted archive."""
+    direct_data = extract_root / "data"
+    if direct_data.is_dir():
+        return direct_data
+
+    top_level_entries = [
+        entry for entry in extract_root.iterdir()
+        if entry.name != "__MACOSX"
+    ]
+
+    top_level_dirs = [entry for entry in top_level_entries if entry.is_dir()]
+    top_level_files = [entry for entry in top_level_entries if entry.is_file()]
+
+    if len(top_level_dirs) == 1 and not top_level_files:
+        nested_data = top_level_dirs[0] / "data"
+        if nested_data.is_dir():
+            return nested_data
+        return top_level_dirs[0]
+
+    return extract_root
+
+
+def copy_tree(src_dir: Path, dst_dir: Path) -> int:
+    """Copy directory tree from src to dst. Returns copied file count."""
+    copied_files = 0
+    for src in src_dir.rglob("*"):
+        rel = src.relative_to(src_dir)
+        dst = dst_dir / rel
+        if src.is_dir():
+            dst.mkdir(parents=True, exist_ok=True)
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        copied_files += 1
+    return copied_files
+
+
+def clear_directory(dir_path: Path) -> None:
+    """Remove all files/folders inside a directory."""
+    if not dir_path.exists():
+        return
+    for child in dir_path.iterdir():
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
 def get_wallet_meta(wallet: str) -> dict:
     """Read wallet metadata from data file."""
     filepath = DATA_DIR / f"{wallet.lower()}.json"
@@ -1204,6 +1320,8 @@ def get_settings():
         "auto_classify_batch_size": AUTO_CLASSIFY_BATCH_SIZE,
         "auto_refresh_enabled": AUTO_REFRESH_ENABLED,
         "auto_refresh_time": AUTO_REFRESH_TIME,
+        "data_backup_restricted": bool(DATA_BACKUP_ADMIN_EMAILS),
+        "data_import_max_mb": DATA_IMPORT_MAX_MB,
     }
 
 
@@ -1246,6 +1364,114 @@ def deduct_balance(
     save_user_balance(current_user.id, balance_data)
 
     return {"balance": balance_data["balance"]}
+
+
+@app.get("/api/admin/data-backup")
+def download_data_backup(current_user: User = Depends(get_current_user)):
+    """Download full backup of data/ directory as zip archive."""
+    ensure_data_backup_access(current_user)
+
+    if not data_backup_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Backup/import is already in progress")
+
+    try:
+        archive_path = create_data_backup_archive()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to create backup: {exc}") from exc
+    finally:
+        data_backup_lock.release()
+
+    return FileResponse(
+        path=str(archive_path),
+        media_type="application/zip",
+        filename=archive_path.name,
+    )
+
+
+@app.post("/api/admin/data-import")
+async def import_data_backup(
+    request: Request,
+    mode: str = "replace",
+    current_user: User = Depends(get_current_user),
+    db: Database = Depends(get_db),
+):
+    """Import data/ directory from uploaded zip archive (replace or merge)."""
+    ensure_data_backup_access(current_user)
+
+    normalized_mode = (mode or "replace").lower()
+    if normalized_mode not in {"replace", "merge"}:
+        raise HTTPException(status_code=400, detail="Invalid mode. Use 'replace' or 'merge'")
+
+    if has_running_background_tasks():
+        raise HTTPException(
+            status_code=409,
+            detail="Stop active refresh/analysis tasks before importing backup",
+        )
+
+    if not data_backup_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Backup/import is already in progress")
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="data-import-", dir=str(PROJECT_ROOT)) as tmp:
+            tmp_dir = Path(tmp)
+            upload_path = tmp_dir / "upload.zip"
+
+            total_bytes = 0
+            with open(upload_path, "wb") as uploaded_file:
+                async for chunk in request.stream():
+                    if not chunk:
+                        continue
+                    total_bytes += len(chunk)
+                    if total_bytes > DATA_IMPORT_MAX_BYTES:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"Archive is too large (max {DATA_IMPORT_MAX_MB} MB)",
+                        )
+                    uploaded_file.write(chunk)
+
+            if total_bytes == 0:
+                raise HTTPException(status_code=400, detail="Request body is empty")
+
+            if not zipfile.is_zipfile(upload_path):
+                raise HTTPException(status_code=400, detail="Uploaded file must be a valid ZIP archive")
+
+            extract_dir = tmp_dir / "extract"
+            extract_dir.mkdir(parents=True, exist_ok=True)
+            safe_extract_zip(upload_path, extract_dir)
+
+            import_root = resolve_data_import_root(extract_dir)
+            source_files = [item for item in import_root.rglob("*") if item.is_file()]
+            if not source_files:
+                raise HTTPException(status_code=400, detail="Archive does not contain data files")
+
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            if normalized_mode == "replace":
+                clear_directory(DATA_DIR)
+                DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+            copied_files = copy_tree(import_root, DATA_DIR)
+
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        DATA_BACKUP_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Reload in-memory DB state from restored users.json.
+        db.load()
+        refresh_tasks.clear()
+
+        return {
+            "status": "ok",
+            "mode": normalized_mode,
+            "imported_files": copied_files,
+            "size_bytes": total_bytes,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to import backup: {exc}") from exc
+    finally:
+        data_backup_lock.release()
 
 
 @app.get("/api/tokens")

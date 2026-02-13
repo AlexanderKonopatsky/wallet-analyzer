@@ -59,6 +59,10 @@
   font-weight: 600;
 }
 
+.data-import-input {
+  display: none;
+}
+
 .btn-logout {
   height: 46px;
   padding: 0 20px;
@@ -117,6 +121,34 @@
 .btn-deposit-active {
   background: #30363d;
   border-color: #484f58;
+}
+
+.btn-admin {
+  height: 46px;
+  padding: 0 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #21262d;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+  border-radius: 12px;
+  cursor: pointer;
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1;
+  box-sizing: border-box;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.btn-admin:hover:not(:disabled) {
+  background: #30363d;
+  border-color: #484f58;
+}
+
+.btn-admin:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .mobile-drawer-control {
@@ -980,6 +1012,13 @@
     padding: 0 11px;
   }
 
+  .btn-admin {
+    height: 36px;
+    min-width: 74px;
+    padding: 0 10px;
+    font-size: 0.76rem;
+  }
+
   .btn-logout-icon {
     width: 36px;
     min-width: 36px;
@@ -1160,6 +1199,11 @@
   .btn-deposit {
     min-width: 72px;
     font-size: 0.78rem;
+  }
+
+  .btn-admin {
+    min-width: 68px;
+    font-size: 0.74rem;
   }
 
   .btn-logout-icon {

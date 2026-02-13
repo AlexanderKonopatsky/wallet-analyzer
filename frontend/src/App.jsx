@@ -135,6 +135,8 @@ function App() {
   const [error, setError] = useState(null)
   const [activeTasks, setActiveTasks] = useState({}) // All active refresh tasks
   const [balance, setBalance] = useState(0)
+  const [backupBusy, setBackupBusy] = useState(false)
+  const [importBusy, setImportBusy] = useState(false)
   const [isMobileLayout, setIsMobileLayout] = useState(() => {
     if (typeof window === 'undefined') return false
     return window.innerWidth <= MOBILE_BREAKPOINT
@@ -142,6 +144,7 @@ function App() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const pollIntervalRef = useRef(null)
   const activeTasksRef = useRef({})
+  const importInputRef = useRef(null)
 
   // Profile
   const [activeView, setActiveView] = useState('report') // 'report' | 'profile' | 'portfolio' | 'payment'
@@ -752,6 +755,93 @@ function App() {
     }
   }, [])
 
+  const downloadDataBackup = useCallback(async () => {
+    setError(null)
+    setBackupBusy(true)
+
+    try {
+      const res = await apiCall('/api/admin/data-backup')
+      if (!res) return
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}))
+        throw new Error(errorData.detail || 'Failed to create data backup')
+      }
+
+      const blob = await res.blob()
+      const contentDisposition = res.headers.get('content-disposition') || ''
+      const filenameMatch = contentDisposition.match(/filename=\"?([^\";]+)\"?/i)
+      const fallback = `data_backup_${new Date().toISOString().replace(/[:.]/g, '-')}.zip`
+      const filename = filenameMatch?.[1] || fallback
+
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.URL.revokeObjectURL(url)
+    } catch (err) {
+      setError(err.message || 'Failed to create data backup')
+    } finally {
+      setBackupBusy(false)
+    }
+  }, [])
+
+  const openDataImportPicker = useCallback(() => {
+    if (!importInputRef.current) return
+    importInputRef.current.value = ''
+    importInputRef.current.click()
+  }, [])
+
+  const handleDataImport = useCallback(async (event) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+
+    if (!file) return
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      setError('Please select a .zip archive')
+      return
+    }
+
+    const confirmed = window.confirm(
+      'Import will replace current server data. Continue?'
+    )
+    if (!confirmed) return
+
+    setError(null)
+    setImportBusy(true)
+
+    try {
+      const res = await apiCall('/api/admin/data-import?mode=replace', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/zip' },
+        body: file
+      })
+      if (!res) return
+
+      const payload = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(payload.detail || 'Failed to import data backup')
+      }
+
+      setActiveTasks({})
+      setSelectedWallet('')
+      setReport(null)
+      setProfile(null)
+      setPortfolio(null)
+      setActiveView('report')
+      await refreshWallets()
+      await refreshBalance()
+      window.alert(`Data import completed: ${payload.imported_files ?? 0} files restored`)
+    } catch (err) {
+      setError(err.message || 'Failed to import data backup')
+    } finally {
+      setImportBusy(false)
+    }
+  }, [refreshBalance, refreshWallets])
+
   useEffect(() => {
     if (typeof window === 'undefined') return
 
@@ -1118,6 +1208,13 @@ function App() {
       <header className="app-header">
         <h1><span>DeFi</span> Wallet Monitor</h1>
         <div className="user-menu">
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".zip,application/zip"
+            className="data-import-input"
+            onChange={handleDataImport}
+          />
           <div className="balance-display">
             <span className="balance-label">Balance:</span>
             <span className="balance-amount">${balance.toFixed(2)}</span>
@@ -1132,6 +1229,22 @@ function App() {
             className={`btn-deposit ${activeView === 'payment' ? 'btn-deposit-active' : ''}`}
           >
             Deposit
+          </button>
+          <button
+            onClick={downloadDataBackup}
+            className="btn-admin"
+            disabled={backupBusy || importBusy || hasRunningTasks}
+            title={hasRunningTasks ? 'Stop active tasks before backup/import' : 'Download full data backup'}
+          >
+            {backupBusy ? 'Backing up...' : 'Backup'}
+          </button>
+          <button
+            onClick={openDataImportPicker}
+            className="btn-admin"
+            disabled={backupBusy || importBusy || hasRunningTasks}
+            title={hasRunningTasks ? 'Stop active tasks before backup/import' : 'Import data backup (.zip)'}
+          >
+            {importBusy ? 'Importing...' : 'Import'}
           </button>
           <button
             onClick={handleLogout}
