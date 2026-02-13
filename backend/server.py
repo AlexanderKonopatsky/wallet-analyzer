@@ -6,8 +6,6 @@ import re
 import sys
 import threading
 import time
-import tempfile
-import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
@@ -23,19 +21,10 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="repla
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
 
 from main import fetch_all_transactions, load_existing_data, save_data
 from db import init_db, get_db, User, Database
-from auth import (
-    create_verification_code,
-    verify_code,
-    create_jwt_token,
-    get_current_user,
-    verify_google_token,
-    get_or_create_user_from_google
-)
+from auth import get_current_user
 from analyze import (
     load_transactions,
     filter_transactions,
@@ -69,20 +58,6 @@ from categories import (
     get_category_stats,
     get_wallets_by_category,
 )
-from payment_provider import (
-    PAYMENT_RECEIVE_TOKEN,
-    PAYMENT_STATUS_DESCRIPTIONS,
-    find_token,
-    from_base_units,
-    get_cached_oneclick_tokens,
-    get_chain_type,
-    is_valid_address,
-    oneclick_execution_status,
-    oneclick_get_quote,
-    parse_token_id,
-    payment_config,
-    to_base_units,
-)
 from user_data_store import (
     load_wallet_tags,
     save_wallet_tags,
@@ -95,22 +70,11 @@ from user_data_store import (
     revoke_analysis_consent,
     load_user_balance,
     save_user_balance,
-    ensure_user_balance_initialized,
-    load_user_payments,
-    create_user_payment,
-    parse_positive_amount,
-    apply_payment_credit_if_needed,
-    get_user_payment,
-    update_user_payment,
 )
-from backup_utils import (
-    create_data_backup_archive,
-    safe_extract_zip,
-    resolve_data_import_root,
-    copy_tree,
-    clear_directory,
-    resolve_backup_archive_path,
-)
+from routers.auth_router import router as auth_router
+from routers.system_router import create_system_router
+from routers.admin_backup_router import create_admin_backup_router
+from routers.payment_router import router as payment_router
 
 CHAIN_EXPLORERS = {
     "ethereum": "https://etherscan.io/tx/",
@@ -230,17 +194,6 @@ def add_user_wallet(db: Database, user_id: int, wallet_address: str):
 
     if db.add_wallet_to_user(user, wallet_address):
         print(f"[DB] Added wallet {wallet_address} for user {user_id}")
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-
-def ensure_data_backup_access(current_user: User) -> None:
-    """Allow backup/import only for configured admin emails (or any user if unset)."""
-    if not DATA_BACKUP_ADMIN_EMAILS:
-        return
-    if current_user.email.lower() not in DATA_BACKUP_ADMIN_EMAILS:
-        raise HTTPException(status_code=403, detail="Backup/import access denied")
 
 
 def has_running_background_tasks() -> bool:
@@ -548,612 +501,36 @@ def background_refresh(wallet: str, user_id: int) -> None:
 refresh_tasks: dict[str, dict] = {}
 
 
-# ── Request/Response Models ──────────────────────────────────────────────────
+def on_data_import_success(db: Database) -> None:
+    """Reload DB and clear cached refresh status after data import."""
+    db.load()
+    refresh_tasks.clear()
 
 
-class RequestCodeRequest(BaseModel):
-    """Request body for /api/auth/request-code"""
-    email: str
-
-
-class VerifyCodeRequest(BaseModel):
-    """Request body for /api/auth/verify-code"""
-    email: str
-    code: str
-
-
-class GoogleAuthRequest(BaseModel):
-    """Request body for /api/auth/google"""
-    token: str
-
-
-# ── Auth Endpoints ────────────────────────────────────────────────────────────
-
-
-class PaymentQuoteRequest(BaseModel):
-    """Request body for /api/quote"""
-    amount: str
-    originToken: str
-    refundAddress: str
-
-
-class PaymentCreateRequest(BaseModel):
-    """Request body for /api/payment/create"""
-    amount: str
-    originToken: str
-    refundAddress: str
-    originAmount: str
-
-
-@app.get("/api/auth/config")
-async def auth_config():
-    """Return public auth config (Google Client ID) for frontend."""
-    from auth import GOOGLE_CLIENT_ID
-    return {"google_client_id": GOOGLE_CLIENT_ID or ""}
-
-
-@app.post("/api/auth/request-code")
-async def request_code(body: RequestCodeRequest, db: Database = Depends(get_db)):
-    """Send verification code to email."""
-    try:
-        email = body.email.lower().strip()
-        create_verification_code(db, email)
-        return {"status": "sent", "email": email}
-    except Exception as e:
-        print(f"[Auth] Error sending code: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/auth/verify-code")
-async def verify_code_endpoint(body: VerifyCodeRequest, db: Database = Depends(get_db)):
-    """Verify code and return JWT token."""
-    email = body.email.lower().strip()
-    user = verify_code(db, email, body.code)
-
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid or expired code")
-
-    # Initialize balance for new users
-    ensure_user_balance_initialized(user.id)
-
-    token = create_jwt_token(user.id)
-
-    return {
-        "token": token,
-        "user": {
-            "id": user.id,
-            "email": user.email
-        }
-    }
-
-
-@app.post("/api/auth/google")
-async def google_auth(body: GoogleAuthRequest, db: Database = Depends(get_db)):
-    """Authenticate with Google OAuth token."""
-    # Verify Google token
-    google_info = verify_google_token(body.token)
-
-    if not google_info:
-        raise HTTPException(status_code=401, detail="Invalid Google token")
-
-    # Get or create user
-    user = get_or_create_user_from_google(db, google_info)
-
-    # Initialize balance for new users
-    ensure_user_balance_initialized(user.id)
-
-    # Create JWT token
-    token = create_jwt_token(user.id)
-
-    return {
-        "token": token,
-        "user": {
-            "id": user.id,
-            "email": user.email
-        }
-    }
-
-
-@app.get("/api/auth/me")
-async def get_me(current_user: User = Depends(get_current_user)):
-    """Get current user info."""
-    return {
-        "id": current_user.id,
-        "email": current_user.email
-    }
-
-
-# ── API Endpoints ─────────────────────────────────────────────────────────────
-
-
-@app.get("/api/settings")
-def get_settings():
-    """Get application settings."""
-    return {
-        "auto_refresh_enabled": AUTO_REFRESH_ENABLED,
-        "auto_refresh_time": AUTO_REFRESH_TIME,
-        "data_backup_restricted": bool(DATA_BACKUP_ADMIN_EMAILS),
-        "data_import_max_mb": DATA_IMPORT_MAX_MB,
-    }
-
-
-@app.get("/api/user/balance")
-def get_user_balance(current_user: User = Depends(get_current_user)):
-    """Get current user's balance."""
-    balance_data = load_user_balance(current_user.id)
-    return {
-        "balance": balance_data.get("balance", 0.0),
-        "currency": "USD"
-    }
-
-
-@app.post("/api/user/balance/deduct")
-def deduct_balance(
-    amount: float,
-    current_user: User = Depends(get_current_user)
-):
-    """Deduct amount from user's balance (for analysis cost)."""
-    if amount <= 0:
-        raise HTTPException(status_code=400, detail="Amount must be positive")
-
-    balance_data = load_user_balance(current_user.id)
-    current_balance = balance_data.get("balance", 0.0)
-
-    if current_balance < amount:
-        raise HTTPException(status_code=402, detail="Insufficient balance")
-
-    # Deduct amount and save transaction
-    balance_data["balance"] = round(current_balance - amount, 2)
-    if "transactions" not in balance_data:
-        balance_data["transactions"] = []
-
-    balance_data["transactions"].append({
-        "type": "deduction",
-        "amount": amount,
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    })
-
-    save_user_balance(current_user.id, balance_data)
-
-    return {"balance": balance_data["balance"]}
-
-
-@app.get("/api/admin/data-backup")
-def download_data_backup(current_user: User = Depends(get_current_user)):
-    """Download full backup of data/ directory as zip archive."""
-    ensure_data_backup_access(current_user)
-
-    if not data_backup_lock.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="Backup/import is already in progress")
-
-    try:
-        archive_path = create_data_backup_archive()
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to create backup: {exc}") from exc
-    finally:
-        data_backup_lock.release()
-
-    return FileResponse(
-        path=str(archive_path),
-        media_type="application/zip",
-        filename=archive_path.name,
+app.include_router(auth_router)
+app.include_router(
+    create_system_router(
+        auto_refresh_enabled=AUTO_REFRESH_ENABLED,
+        auto_refresh_time=AUTO_REFRESH_TIME,
+        data_backup_restricted=bool(DATA_BACKUP_ADMIN_EMAILS),
+        data_import_max_mb=DATA_IMPORT_MAX_MB,
     )
-
-
-@app.get("/api/admin/data-backups")
-def list_data_backups(current_user: User = Depends(get_current_user)):
-    """List existing backup archives in data/backups."""
-    ensure_data_backup_access(current_user)
-
-    if not data_backup_lock.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="Backup/import is already in progress")
-
-    try:
-        DATA_BACKUP_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
-        backups = []
-        for archive in DATA_BACKUP_ARCHIVE_DIR.glob("*.zip"):
-            stat = archive.stat()
-            backups.append({
-                "filename": archive.name,
-                "size_bytes": stat.st_size,
-                "created_at": datetime.fromtimestamp(stat.st_ctime, tz=timezone.utc).isoformat(),
-                "updated_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-            })
-        backups.sort(key=lambda item: item["updated_at"], reverse=True)
-        return {"backups": backups}
-    finally:
-        data_backup_lock.release()
-
-
-@app.get("/api/admin/data-backups/{filename}")
-def download_existing_data_backup(filename: str, current_user: User = Depends(get_current_user)):
-    """Download an existing backup archive from data/backups."""
-    ensure_data_backup_access(current_user)
-
-    if not data_backup_lock.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="Backup/import is already in progress")
-
-    try:
-        archive_path = resolve_backup_archive_path(filename)
-        if not archive_path.exists() or not archive_path.is_file():
-            raise HTTPException(status_code=404, detail="Backup archive not found")
-        return FileResponse(
-            path=str(archive_path),
-            media_type="application/zip",
-            filename=archive_path.name,
-        )
-    finally:
-        data_backup_lock.release()
-
-
-@app.delete("/api/admin/data-backups/{filename}")
-def delete_data_backup(filename: str, current_user: User = Depends(get_current_user)):
-    """Delete a backup archive from data/backups."""
-    ensure_data_backup_access(current_user)
-
-    if not data_backup_lock.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="Backup/import is already in progress")
-
-    try:
-        archive_path = resolve_backup_archive_path(filename)
-        if not archive_path.exists() or not archive_path.is_file():
-            raise HTTPException(status_code=404, detail="Backup archive not found")
-        archive_path.unlink()
-        return {"status": "deleted", "filename": archive_path.name}
-    finally:
-        data_backup_lock.release()
-
-
-@app.post("/api/admin/data-import")
-async def import_data_backup(
-    request: Request,
-    mode: str = "replace",
-    current_user: User = Depends(get_current_user),
-    db: Database = Depends(get_db),
-):
-    """Import data/ directory from uploaded zip archive (replace or merge)."""
-    ensure_data_backup_access(current_user)
-
-    normalized_mode = (mode or "replace").lower()
-    if normalized_mode not in {"replace", "merge"}:
-        raise HTTPException(status_code=400, detail="Invalid mode. Use 'replace' or 'merge'")
-
-    if has_running_background_tasks():
-        raise HTTPException(
-            status_code=409,
-            detail="Stop active refresh/analysis tasks before importing backup",
-        )
-
-    if not data_backup_lock.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="Backup/import is already in progress")
-
-    try:
-        with tempfile.TemporaryDirectory(prefix="data-import-", dir=str(PROJECT_ROOT)) as tmp:
-            tmp_dir = Path(tmp)
-            upload_path = tmp_dir / "upload.zip"
-
-            total_bytes = 0
-            with open(upload_path, "wb") as uploaded_file:
-                async for chunk in request.stream():
-                    if not chunk:
-                        continue
-                    total_bytes += len(chunk)
-                    if total_bytes > DATA_IMPORT_MAX_BYTES:
-                        raise HTTPException(
-                            status_code=413,
-                            detail=f"Archive is too large (max {DATA_IMPORT_MAX_MB} MB)",
-                        )
-                    uploaded_file.write(chunk)
-
-            if total_bytes == 0:
-                raise HTTPException(status_code=400, detail="Request body is empty")
-
-            if not zipfile.is_zipfile(upload_path):
-                raise HTTPException(status_code=400, detail="Uploaded file must be a valid ZIP archive")
-
-            extract_dir = tmp_dir / "extract"
-            extract_dir.mkdir(parents=True, exist_ok=True)
-            safe_extract_zip(upload_path, extract_dir)
-
-            import_root = resolve_data_import_root(extract_dir)
-            source_files = [item for item in import_root.rglob("*") if item.is_file()]
-            if not source_files:
-                raise HTTPException(status_code=400, detail="Archive does not contain data files")
-
-            DATA_DIR.mkdir(parents=True, exist_ok=True)
-            if normalized_mode == "replace":
-                # Keep local backup history on server during restore.
-                clear_directory(DATA_DIR, keep_names={"backups"})
-                DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-            # Do not overwrite local backup archive store from imported snapshot.
-            copied_files = copy_tree(import_root, DATA_DIR, skip_top_level_dirs={"backups"})
-
-        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-        DATA_BACKUP_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
-
-        # Reload in-memory DB state from restored users.json.
-        db.load()
-        refresh_tasks.clear()
-
-        return {
-            "status": "ok",
-            "mode": normalized_mode,
-            "imported_files": copied_files,
-            "size_bytes": total_bytes,
-        }
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to import backup: {exc}") from exc
-    finally:
-        data_backup_lock.release()
-
-
-@app.get("/api/tokens")
-def get_payment_tokens(current_user: User = Depends(get_current_user)):
-    """List supported payment tokens grouped by chain."""
-    _ = current_user
-    tokens = get_cached_oneclick_tokens()
-    stablecoins = {"USDC", "USDT", "DAI"}
-
-    grouped = {}
-    filtered_count = 0
-    for token in tokens:
-        symbol = str(token.get("symbol") or "").upper()
-        if symbol not in stablecoins:
-            continue
-        filtered_count += 1
-
-        chain = token.get("blockchain") or token.get("chain") or "unknown"
-        if chain not in grouped:
-            grouped[chain] = []
-        grouped[chain].append({
-            "symbol": token.get("symbol"),
-            "name": token.get("name") or "",
-            "decimals": token.get("decimals"),
-            "chain": chain,
-            "defuseAssetId": token.get("defuseAssetId") or token.get("assetId"),
-            "contractAddress": token.get("contractAddress") or token.get("address"),
-        })
-
-    print(f"[/api/tokens] Filtered {filtered_count} stablecoins across {len(grouped)} chains")
-    return {"tokens": grouped}
-
-
-@app.post("/api/quote")
-def get_payment_quote(
-    body: PaymentQuoteRequest,
-    current_user: User = Depends(get_current_user),
-):
-    """Get dry quote for payment."""
-    _ = current_user
-    receive_address, (dest_chain, dest_token_id) = payment_config()
-
-    amount = body.amount.strip()
-    origin_token = body.originToken.strip()
-    refund_address = body.refundAddress.strip()
-    if not amount or not origin_token or not refund_address:
-        raise HTTPException(
-            status_code=400,
-            detail="amount, originToken, and refundAddress are required",
-        )
-
-    tokens = get_cached_oneclick_tokens()
-    source_chain, source_token_id = parse_token_id(origin_token)
-
-    from_token = find_token(tokens, source_chain, source_token_id)
-    if not from_token:
-        raise HTTPException(status_code=400, detail=f"Token not found: {origin_token}")
-
-    to_token = find_token(tokens, dest_chain, dest_token_id)
-    if not to_token:
-        raise HTTPException(status_code=500, detail="Destination token is not configured correctly")
-
-    chain_type = get_chain_type(source_chain)
-    if not is_valid_address(refund_address, chain_type):
-        raise HTTPException(status_code=400, detail=f"Invalid refund address for {source_chain}")
-
-    from_decimals = int(from_token.get("decimals") or 0)
-    to_decimals = int(to_token.get("decimals") or 0)
-    origin_amount_base = to_base_units(amount, from_decimals)
-    if origin_amount_base == "0":
-        raise HTTPException(status_code=400, detail="Amount must be greater than 0")
-
-    quote_response = oneclick_get_quote(
-        dry=True,
-        origin_asset=from_token.get("defuseAssetId") or from_token.get("assetId"),
-        destination_asset=to_token.get("defuseAssetId") or to_token.get("assetId"),
-        amount=origin_amount_base,
-        recipient=receive_address,
-        refund_to=refund_address,
+)
+app.include_router(
+    create_admin_backup_router(
+        data_backup_admin_emails=DATA_BACKUP_ADMIN_EMAILS,
+        data_backup_lock=data_backup_lock,
+        project_root=PROJECT_ROOT,
+        data_dir=DATA_DIR,
+        reports_dir=REPORTS_DIR,
+        data_backup_archive_dir=DATA_BACKUP_ARCHIVE_DIR,
+        data_import_max_mb=DATA_IMPORT_MAX_MB,
+        data_import_max_bytes=DATA_IMPORT_MAX_BYTES,
+        has_running_background_tasks=has_running_background_tasks,
+        on_import_success=on_data_import_success,
     )
-    quote_data = quote_response.get("quote", quote_response)
-
-    return {
-        "originToken": origin_token,
-        "originSymbol": from_token.get("symbol"),
-        "originChain": source_chain,
-        "originAmount": amount,
-        "originDecimals": from_decimals,
-        "destinationAmount": from_base_units(quote_data.get("amountOut") or "0", to_decimals),
-        "destinationSymbol": to_token.get("symbol"),
-        "destinationChain": dest_chain,
-        "feeUsd": quote_data.get("feeUsd"),
-    }
-
-
-@app.post("/api/payment/create")
-def create_payment_endpoint(
-    body: PaymentCreateRequest,
-    current_user: User = Depends(get_current_user),
-):
-    """Create payment and return deposit address."""
-    receive_address, (dest_chain, dest_token_id) = payment_config()
-
-    amount = body.amount.strip()
-    origin_token = body.originToken.strip()
-    refund_address = body.refundAddress.strip()
-    origin_amount = body.originAmount.strip()
-    if not amount or not origin_token or not refund_address or not origin_amount:
-        raise HTTPException(
-            status_code=400,
-            detail="amount, originToken, refundAddress, and originAmount are required",
-        )
-
-    tokens = get_cached_oneclick_tokens()
-    source_chain, source_token_id = parse_token_id(origin_token)
-
-    from_token = find_token(tokens, source_chain, source_token_id)
-    if not from_token:
-        raise HTTPException(status_code=400, detail=f"Token not found: {origin_token}")
-
-    to_token = find_token(tokens, dest_chain, dest_token_id)
-    if not to_token:
-        raise HTTPException(status_code=500, detail="Destination token is not configured")
-
-    chain_type = get_chain_type(source_chain)
-    if not is_valid_address(refund_address, chain_type):
-        raise HTTPException(status_code=400, detail=f"Invalid refund address for {source_chain}")
-
-    from_decimals = int(from_token.get("decimals") or 0)
-    to_decimals = int(to_token.get("decimals") or 0)
-    origin_amount_base = to_base_units(origin_amount, from_decimals)
-    if origin_amount_base == "0":
-        raise HTTPException(status_code=400, detail="originAmount must be greater than 0")
-
-    quote_response = oneclick_get_quote(
-        dry=False,
-        origin_asset=from_token.get("defuseAssetId") or from_token.get("assetId"),
-        destination_asset=to_token.get("defuseAssetId") or to_token.get("assetId"),
-        amount=origin_amount_base,
-        recipient=receive_address,
-        refund_to=refund_address,
-    )
-    quote_data = quote_response.get("quote", quote_response)
-    deposit_address = quote_data.get("depositAddress")
-    if not deposit_address:
-        raise HTTPException(status_code=502, detail="No deposit address received from payment provider")
-
-    payment = create_user_payment(current_user.id, {
-        "amount": amount,
-        "originAmount": origin_amount,
-        "originAmountBase": origin_amount_base,
-        "originToken": origin_token,
-        "originSymbol": from_token.get("symbol"),
-        "originChain": source_chain,
-        "originDecimals": from_decimals,
-        "destinationToken": PAYMENT_RECEIVE_TOKEN,
-        "destinationSymbol": to_token.get("symbol"),
-        "depositAddress": deposit_address,
-        "refundAddress": refund_address,
-        "amountOut": from_base_units(quote_data.get("amountOut") or "0", to_decimals),
-        "swapDetails": None,
-        "balanceCredited": False,
-    })
-
-    return {
-        "id": payment["id"],
-        "depositAddress": payment["depositAddress"],
-        "originAmount": payment["originAmount"],
-        "originSymbol": payment["originSymbol"],
-        "originChain": payment["originChain"],
-        "amountOut": payment["amountOut"],
-        "destinationSymbol": payment["destinationSymbol"],
-        "status": payment["status"],
-    }
-
-
-@app.get("/api/payment/{payment_id}/status")
-def get_payment_status(
-    payment_id: str,
-    current_user: User = Depends(get_current_user),
-):
-    """Get payment status by ID."""
-    payment = get_user_payment(current_user.id, payment_id)
-    if not payment:
-        raise HTTPException(status_code=404, detail="Payment not found")
-
-    terminal_statuses = {"SUCCESS", "FAILED", "REFUNDED"}
-    if payment.get("status") in terminal_statuses:
-        if payment.get("status") == "SUCCESS":
-            payment = apply_payment_credit_if_needed(current_user.id, payment)
-        return {
-            "id": payment["id"],
-            "status": payment["status"],
-            "statusDescription": PAYMENT_STATUS_DESCRIPTIONS.get(payment["status"], payment["status"]),
-            "originAmount": payment.get("originAmount"),
-            "originSymbol": payment.get("originSymbol"),
-            "originChain": payment.get("originChain"),
-            "amountOut": payment.get("amountOut"),
-            "destinationSymbol": payment.get("destinationSymbol"),
-            "depositAddress": payment.get("depositAddress"),
-            "refundAddress": payment.get("refundAddress"),
-            "createdAt": payment.get("createdAt"),
-            "completedAt": payment.get("completedAt"),
-            "swapDetails": payment.get("swapDetails"),
-        }
-
-    try:
-        api_status = oneclick_execution_status(payment["depositAddress"])
-        new_status = api_status.get("status")
-        updates = {}
-        if new_status and new_status != payment.get("status"):
-            updates["status"] = new_status
-            if new_status in terminal_statuses:
-                updates["completedAt"] = datetime.now(timezone.utc).isoformat()
-        if api_status.get("swapDetails"):
-            updates["swapDetails"] = api_status.get("swapDetails")
-        if updates:
-            payment = update_user_payment(current_user.id, payment_id, updates) or payment
-        if payment.get("status") == "SUCCESS":
-            payment = apply_payment_credit_if_needed(current_user.id, payment)
-    except HTTPException as api_error:
-        if payment.get("status") == "SUCCESS":
-            payment = apply_payment_credit_if_needed(current_user.id, payment)
-        return {
-            "id": payment["id"],
-            "status": payment.get("status"),
-            "statusDescription": PAYMENT_STATUS_DESCRIPTIONS.get(payment.get("status"), payment.get("status")),
-            "originAmount": payment.get("originAmount"),
-            "originSymbol": payment.get("originSymbol"),
-            "originChain": payment.get("originChain"),
-            "amountOut": payment.get("amountOut"),
-            "destinationSymbol": payment.get("destinationSymbol"),
-            "depositAddress": payment.get("depositAddress"),
-            "refundAddress": payment.get("refundAddress"),
-            "createdAt": payment.get("createdAt"),
-            "completedAt": payment.get("completedAt"),
-            "swapDetails": payment.get("swapDetails"),
-            "apiError": api_error.detail,
-        }
-
-    return {
-        "id": payment["id"],
-        "status": payment.get("status"),
-        "statusDescription": PAYMENT_STATUS_DESCRIPTIONS.get(payment.get("status"), payment.get("status")),
-        "originAmount": payment.get("originAmount"),
-        "originSymbol": payment.get("originSymbol"),
-        "originChain": payment.get("originChain"),
-        "amountOut": payment.get("amountOut"),
-        "destinationSymbol": payment.get("destinationSymbol"),
-        "depositAddress": payment.get("depositAddress"),
-        "refundAddress": payment.get("refundAddress"),
-        "createdAt": payment.get("createdAt"),
-        "completedAt": payment.get("completedAt"),
-        "swapDetails": payment.get("swapDetails"),
-    }
-
-
-@app.get("/api/payments")
-def list_user_payments(current_user: User = Depends(get_current_user)):
-    """List payment history for current user."""
-    payments = load_user_payments(current_user.id)
-    payments_sorted = sorted(payments, key=lambda payment: payment.get("createdAt", ""), reverse=True)
-    return {"payments": payments_sorted}
-
+)
+app.include_router(payment_router)
 
 @app.get("/api/wallets")
 def list_wallets(
@@ -2150,5 +1527,6 @@ else:
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
 
 
