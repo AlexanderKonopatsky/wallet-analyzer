@@ -1138,11 +1138,19 @@ def background_refresh(wallet: str, user_id: int) -> None:
 
         # Deduct from balance
         balance_data = load_user_balance(user_id)
-        current_balance = balance_data.get("balance", 0.0)
+        current_balance = float(balance_data.get("balance", 0.0) or 0.0)
         if current_balance < analysis_cost:
             print(f"[Refresh] Insufficient balance for {wallet_lower}: need ${analysis_cost}, have ${current_balance}", flush=True)
             user_refresh_tasks = load_refresh_status(user_id)
-            user_refresh_tasks[wallet_lower] = {"status": "error", "detail": f"Insufficient balance: need ${analysis_cost}, have ${current_balance}"}
+            user_refresh_tasks[wallet_lower] = {
+                "status": "cost_estimate",
+                "detail": f"Insufficient balance: need ${analysis_cost:.2f}, have ${current_balance:.2f}",
+                "tx_count": tx_count,
+                "cost_usd": analysis_cost,
+                "required_cost_usd": analysis_cost,
+                "balance_usd": round(current_balance, 2),
+                "insufficient_balance": True,
+            }
             save_refresh_status(user_id, user_refresh_tasks)
             refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
             return
@@ -3133,7 +3141,7 @@ def get_active_tasks(current_user: User = Depends(get_current_user), db: Databas
     active = {
         wallet: status
         for wallet, status in user_refresh_tasks.items()
-        if status.get("status") in ("fetching", "analyzing", "classifying")
+        if status.get("status") in ("cost_estimate", "fetching", "analyzing", "classifying")
     }
     return active
 

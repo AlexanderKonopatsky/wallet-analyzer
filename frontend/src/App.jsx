@@ -8,7 +8,8 @@ import PaymentWidget from './components/PaymentWidget'
 import LoginPage from './components/LoginPage'
 import { apiCall, setAuthToken, getUser, logout } from './utils/api'
 
-const ACTIVE_TASK_STATUSES = new Set(['cost_estimate', 'fetching', 'analyzing', 'classifying'])
+const RUNNING_TASK_STATUSES = new Set(['fetching', 'analyzing', 'classifying'])
+const KNOWN_TASK_STATUSES = new Set(['cost_estimate', 'fetching', 'analyzing', 'classifying'])
 
 function countSections(markdown) {
   if (!markdown) return 0
@@ -280,6 +281,14 @@ function App() {
     estimatedCostUsd: 0
   })
   const profileCostModalResolveRef = useRef(null)
+  const [insufficientBalanceModal, setInsufficientBalanceModal] = useState({
+    open: false,
+    wallet: '',
+    requiredCostUsd: 0,
+    balanceUsd: 0,
+    detail: ''
+  })
+  const insufficientBalanceNotifiedRef = useRef(new Set())
 
   // Portfolio
   const [portfolio, setPortfolio] = useState(null)
@@ -398,6 +407,18 @@ function App() {
     }
   }, [])
 
+  const closeInsufficientBalanceModal = useCallback(() => {
+    setInsufficientBalanceModal(prev => ({ ...prev, open: false }))
+  }, [])
+
+  const openDepositFromInsufficientModal = useCallback(() => {
+    setInsufficientBalanceModal(prev => ({ ...prev, open: false }))
+    setActiveView('payment')
+    if (isMobileLayout) {
+      setMobileSidebarOpen(false)
+    }
+  }, [isMobileLayout])
+
   useEffect(() => {
     if (!profileCostModal.open) return
 
@@ -416,6 +437,25 @@ function App() {
       document.removeEventListener('keydown', onKeyDown)
     }
   }, [profileCostModal.open, resolveProfileCostModal])
+
+  useEffect(() => {
+    if (!insufficientBalanceModal.open) return
+
+    const previousOverflow = document.body.style.overflow
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        closeInsufficientBalanceModal()
+      }
+    }
+
+    document.body.style.overflow = 'hidden'
+    document.addEventListener('keydown', onKeyDown)
+
+    return () => {
+      document.body.style.overflow = previousOverflow
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [insufficientBalanceModal.open, closeInsufficientBalanceModal])
 
   useEffect(() => {
     return () => {
@@ -1129,8 +1169,38 @@ function App() {
 
         setActiveTasks(mergedTasks)
 
+        for (const [wallet, status] of Object.entries(mergedTasks)) {
+          if (status?.status !== 'cost_estimate' || !status?.insufficient_balance) {
+            continue
+          }
+          if (insufficientBalanceNotifiedRef.current.has(wallet)) {
+            continue
+          }
+
+          insufficientBalanceNotifiedRef.current.add(wallet)
+          const requiredCostUsd = Number(status.required_cost_usd ?? status.cost_usd ?? 0)
+          const balanceUsd = Number(status.balance_usd ?? 0)
+          const detail = status.detail || 'Insufficient balance to start analysis'
+
+          setInsufficientBalanceModal(prev => {
+            if (prev.open) return prev
+            return {
+              open: true,
+              wallet,
+              requiredCostUsd,
+              balanceUsd,
+              detail
+            }
+          })
+          break
+        }
+
         // Stop polling if no tasks are running
-        if (Object.keys(mergedTasks).length === 0) {
+        const hasRunningTasks = Object.values(mergedTasks).some((task) =>
+          RUNNING_TASK_STATUSES.has(task?.status)
+        )
+
+        if (!hasRunningTasks) {
           clearInterval(poll)
           pollIntervalRef.current = null
           // Refresh wallet list to update metadata
@@ -1210,19 +1280,18 @@ function App() {
   const startAnalysis = useCallback(async (wallet) => {
     if (!wallet) return
     setError(null)
-
-    // Remove cost estimate task
-    setActiveTasks(prev => {
-      const newTasks = { ...prev }
-      delete newTasks[wallet.toLowerCase()]
-      return newTasks
-    })
+    const walletLower = wallet.toLowerCase()
+    insufficientBalanceNotifiedRef.current.delete(walletLower)
 
     try {
       const res = await apiCall(`/api/start-analysis/${wallet}`, { method: 'POST' })
       if (!res) return
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.detail || 'Failed to start analysis')
+      }
 
-      const data = await res.json()
+      await res.json().catch(() => ({}))
 
       // Start monitoring all tasks
       startMonitoring()
@@ -1233,11 +1302,16 @@ function App() {
 
   const cancelAnalysis = useCallback((wallet) => {
     // Remove cost estimate task and deselect wallet
+    const walletLower = wallet.toLowerCase()
     setActiveTasks(prev => {
       const newTasks = { ...prev }
-      delete newTasks[wallet.toLowerCase()]
+      delete newTasks[walletLower]
       return newTasks
     })
+    insufficientBalanceNotifiedRef.current.delete(walletLower)
+    setInsufficientBalanceModal(prev =>
+      prev.wallet === walletLower ? { ...prev, open: false } : prev
+    )
     setSelectedWallet('')
   }, [])
 
@@ -1247,12 +1321,17 @@ function App() {
     // For refresh (wallet already exists), just start analysis directly
     // Cost was already shown when wallet was first added
     setError(null)
+    insufficientBalanceNotifiedRef.current.delete(wallet.toLowerCase())
 
     try {
       const res = await apiCall(`/api/start-analysis/${wallet}`, { method: 'POST' })
       if (!res) return
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.detail || 'Failed to start analysis')
+      }
 
-      const data = await res.json()
+      await res.json().catch(() => ({}))
 
       // Start monitoring all tasks
       startMonitoring()
@@ -1379,7 +1458,7 @@ function App() {
     task && typeof task === 'object'
   )
   const hasRunningTasks = taskEntries.some(([, task]) =>
-    ACTIVE_TASK_STATUSES.has(task.status)
+    RUNNING_TASK_STATUSES.has(task.status)
   )
   const isRefreshing = hasRunningTasks
   const hasActiveTasks = taskEntries.length > 0
@@ -1550,14 +1629,19 @@ function App() {
                           <div className="cost-estimate-info">
                             <div className="cost-estimate-row">
                               <span className="cost-estimate-label">Transactions:</span>
-                              <span className="cost-estimate-value">{task.tx_count.toLocaleString()}</span>
+                              <span className="cost-estimate-value">{Number(task.tx_count || 0).toLocaleString()}</span>
                             </div>
                             <div className="cost-estimate-row">
                               <span className="cost-estimate-label">Cost:</span>
-                              <span className="cost-estimate-value cost-estimate-price">${task.cost_usd.toFixed(2)}</span>
+                              <span className="cost-estimate-value cost-estimate-price">${Number(task.cost_usd || 0).toFixed(2)}</span>
                             </div>
                             {task.is_cached && (
                               <div className="cost-estimate-note">Transactions cached</div>
+                            )}
+                            {task.insufficient_balance && (
+                              <div className="cost-estimate-warning">
+                                Not enough balance: need ${Number(task.required_cost_usd ?? task.cost_usd ?? 0).toFixed(2)}, available ${Number(task.balance_usd ?? 0).toFixed(2)}.
+                              </div>
                             )}
                           </div>
                           <div className="cost-estimate-actions">
@@ -1613,7 +1697,7 @@ function App() {
                           )}
                         </div>
                       )}
-                      {!ACTIVE_TASK_STATUSES.has(task.status) && (
+                      {!KNOWN_TASK_STATUSES.has(task.status) && (
                         <div className="task-status-unknown">
                           <span className="task-label">Task in progress</span>
                           {task.detail && <span className="task-detail">{task.detail}</span>}
@@ -1670,6 +1754,64 @@ function App() {
           )}
         </div>
       </div>
+
+      {insufficientBalanceModal.open && (
+        <div
+          className="modal-overlay insufficient-balance-overlay"
+          onClick={closeInsufficientBalanceModal}
+        >
+          <div
+            className="modal-content insufficient-balance-modal"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="insufficient-balance-title"
+          >
+            <div className="modal-header">
+              <h2 id="insufficient-balance-title">Insufficient Balance</h2>
+              <button
+                className="modal-close"
+                onClick={closeInsufficientBalanceModal}
+                aria-label="Close"
+              >
+                x
+              </button>
+            </div>
+
+            <div className="insufficient-balance-body">
+              <div className="insufficient-balance-detail">{insufficientBalanceModal.detail}</div>
+              {insufficientBalanceModal.wallet && (
+                <div className="insufficient-balance-meta">
+                  <div>
+                    Wallet: {insufficientBalanceModal.wallet.slice(0, 8)}...{insufficientBalanceModal.wallet.slice(-6)}
+                  </div>
+                  <div>
+                    Required: ${Number(insufficientBalanceModal.requiredCostUsd || 0).toFixed(2)}
+                  </div>
+                  <div>
+                    Current balance: ${Number(insufficientBalanceModal.balanceUsd || 0).toFixed(2)}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="insufficient-balance-actions">
+              <button
+                className="btn-cost-cancel"
+                onClick={closeInsufficientBalanceModal}
+              >
+                Close
+              </button>
+              <button
+                className="btn-deposit insufficient-balance-deposit"
+                onClick={openDepositFromInsufficientModal}
+              >
+                Deposit
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {profileCostModal.open && (
         <div

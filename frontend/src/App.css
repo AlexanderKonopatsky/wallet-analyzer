@@ -382,6 +382,11 @@
   font-style: italic;
 }
 
+.cost-estimate-warning {
+  font-size: 0.78rem;
+  color: #f85149;
+}
+
 .cost-estimate-actions {
   display: flex;
   gap: 8px;
@@ -709,6 +714,53 @@
 .profile-cost-modal {
   width: 460px;
   max-width: 92vw;
+}
+
+.insufficient-balance-overlay {
+  z-index: 1200;
+}
+
+.insufficient-balance-modal {
+  width: 460px;
+  max-width: 92vw;
+}
+
+.insufficient-balance-body {
+  padding: 16px 20px 18px;
+  border-top: 1px solid #21262d;
+  border-bottom: 1px solid #21262d;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.insufficient-balance-detail {
+  color: #f85149;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.insufficient-balance-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 0.82rem;
+  color: #8b949e;
+  font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+}
+
+.insufficient-balance-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 20px 16px;
+}
+
+.insufficient-balance-deposit {
+  height: 34px;
+  border-radius: 8px;
+  padding: 0 16px;
+  font-size: 0.82rem;
 }
 
 .profile-cost-body {
