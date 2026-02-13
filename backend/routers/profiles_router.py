@@ -80,6 +80,7 @@ def create_profiles_router(
     *,
     reports_dir: Path,
     check_wallet_ownership: Callable[[Database, int, str], bool],
+    add_user_wallet: Callable[[Database, int, str], None],
     get_wallet_meta: Callable[[str], dict | None],
     estimate_profile_generation_cost: Callable[[str], dict],
     profile_model: str,
@@ -87,6 +88,24 @@ def create_profiles_router(
     profile_system_prompt: str,
 ) -> APIRouter:
     router = APIRouter()
+
+    def ensure_wallet_access(
+        *,
+        db: Database,
+        user_id: int,
+        wallet: str,
+        can_auto_attach: bool,
+    ) -> None:
+        """Ensure user can access wallet; auto-attach when shared artifacts already exist."""
+        if check_wallet_ownership(db, user_id, wallet):
+            return
+
+        if can_auto_attach:
+            add_user_wallet(db, user_id, wallet)
+            if check_wallet_ownership(db, user_id, wallet):
+                return
+
+        raise HTTPException(status_code=403, detail="Wallet not found in your list")
 
     @router.get("/api/report/{wallet}")
     def get_report(
@@ -103,8 +122,12 @@ def create_profiles_router(
         if not report_path.exists():
             raise HTTPException(status_code=404, detail="No report found for this wallet")
 
-        if not check_wallet_ownership(db, current_user.id, wallet):
-            raise HTTPException(status_code=403, detail="Wallet not found in your list")
+        ensure_wallet_access(
+            db=db,
+            user_id=current_user.id,
+            wallet=wallet,
+            can_auto_attach=True,
+        )
 
         markdown = report_path.read_text(encoding="utf-8")
         sections, fingerprints = _parse_report_sections(markdown)
@@ -153,12 +176,16 @@ def create_profiles_router(
         """Get cached profile for a wallet."""
         wallet = wallet.lower()
 
-        if not check_wallet_ownership(db, current_user.id, wallet):
-            raise HTTPException(status_code=403, detail="Wallet not found in your list")
-
         profile_path = reports_dir / f"{wallet}_profile.json"
         if not profile_path.exists():
             raise HTTPException(status_code=404, detail="No profile found")
+
+        ensure_wallet_access(
+            db=db,
+            user_id=current_user.id,
+            wallet=wallet,
+            can_auto_attach=True,
+        )
 
         with open(profile_path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -173,12 +200,16 @@ def create_profiles_router(
         """Estimate profile generation cost from report size/word count."""
         wallet = wallet.lower()
 
-        if not check_wallet_ownership(db, current_user.id, wallet):
-            raise HTTPException(status_code=403, detail="Wallet not found in your list")
-
         report_path = reports_dir / f"{wallet}.md"
         if not report_path.exists():
             raise HTTPException(status_code=404, detail="Report not found. Refresh data first.")
+
+        ensure_wallet_access(
+            db=db,
+            user_id=current_user.id,
+            wallet=wallet,
+            can_auto_attach=True,
+        )
 
         markdown = report_path.read_text(encoding="utf-8")
         report_hash = hashlib.md5(markdown.encode("utf-8")).hexdigest()
@@ -217,8 +248,12 @@ def create_profiles_router(
         if not report_path.exists():
             raise HTTPException(status_code=404, detail="Report not found. Refresh data first.")
 
-        if not check_wallet_ownership(db, current_user.id, wallet):
-            raise HTTPException(status_code=403, detail="Wallet not found in your list")
+        ensure_wallet_access(
+            db=db,
+            user_id=current_user.id,
+            wallet=wallet,
+            can_auto_attach=True,
+        )
 
         markdown = report_path.read_text(encoding="utf-8")
         report_hash = hashlib.md5(markdown.encode("utf-8")).hexdigest()
