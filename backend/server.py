@@ -521,7 +521,6 @@ app.include_router(
     create_profiles_router(
         reports_dir=REPORTS_DIR,
         check_wallet_ownership=check_wallet_ownership,
-        add_user_wallet=add_user_wallet,
         get_wallet_meta=get_wallet_meta,
         estimate_profile_generation_cost=estimate_profile_generation_cost,
         profile_model=PROFILE_MODEL,

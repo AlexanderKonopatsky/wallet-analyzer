@@ -41,24 +41,6 @@ def create_analysis_router(
 ) -> APIRouter:
     router = APIRouter()
 
-    def ensure_wallet_access(
-        *,
-        db: Database,
-        user_id: int,
-        wallet: str,
-        can_auto_attach: bool,
-    ) -> None:
-        """Ensure user can access wallet; auto-attach when shared cache already exists."""
-        if check_wallet_ownership(db, user_id, wallet):
-            return
-
-        if can_auto_attach:
-            add_user_wallet(db, user_id, wallet)
-            if check_wallet_ownership(db, user_id, wallet):
-                return
-
-        raise HTTPException(status_code=403, detail="Wallet not found in your list")
-
     def format_tx_for_frontend(tx: dict) -> dict:
         """Format a transaction for display in the frontend."""
         tx_type = tx.get("tx_type", "?")
@@ -241,13 +223,8 @@ def create_analysis_router(
         """Get transaction counts per day."""
         wallet = wallet.lower()
 
-        data_file = data_dir / f"{wallet}.json"
-        ensure_wallet_access(
-            db=db,
-            user_id=current_user.id,
-            wallet=wallet,
-            can_auto_attach=data_file.exists(),
-        )
+        if not check_wallet_ownership(db, current_user.id, wallet):
+            raise HTTPException(status_code=403, detail="Wallet not found in your list")
 
         raw_txs = load_transactions(wallet)
         if not raw_txs:
@@ -268,13 +245,8 @@ def create_analysis_router(
         """Get wallet transactions, optionally filtered by date range."""
         wallet = wallet.lower()
 
-        data_file = data_dir / f"{wallet}.json"
-        ensure_wallet_access(
-            db=db,
-            user_id=current_user.id,
-            wallet=wallet,
-            can_auto_attach=data_file.exists(),
-        )
+        if not check_wallet_ownership(db, current_user.id, wallet):
+            raise HTTPException(status_code=403, detail="Wallet not found in your list")
 
         raw_txs = load_transactions(wallet)
         if not raw_txs:
