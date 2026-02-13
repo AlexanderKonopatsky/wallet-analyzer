@@ -365,10 +365,13 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
       let maxTxUsdInDay = 0
 
       dayTxs.forEach((tx) => {
-        const chain = typeof tx?.chain === 'string' ? tx.chain.trim() : ''
-        if (chain) {
-          chainsInDay.add(chain)
-        }
+        const chainValues = [tx?.chain, tx?.from_chain, tx?.to_chain]
+        chainValues.forEach((chainValue) => {
+          const chain = typeof chainValue === 'string' ? chainValue.trim() : ''
+          if (chain && chain !== '?') {
+            chainsInDay.add(chain)
+          }
+        })
 
         const volumeUsd = getTxVolumeUsd(tx)
         if (volumeUsd > maxTxUsdInDay) {
@@ -434,6 +437,23 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
     if (!isAnyDayFilterActive) return [...dayActivityMap.keys()].sort()
     return matchingDates
   }, [dayActivityMap, isAnyDayFilterActive, matchingDates])
+
+  const calendarSourceSections = useMemo(() => {
+    const byDate = new Map()
+    ;[...calendarSections, ...sections].forEach((section) => {
+      const sortDate = section?._sortDate
+      if (!sortDate) return
+
+      const existing = byDate.get(sortDate)
+      if (!existing || (section?._significance || 0) > (existing?._significance || 0)) {
+        byDate.set(sortDate, section)
+      }
+    })
+
+    const merged = [...byDate.values()]
+    merged.sort((a, b) => b._sortDate.localeCompare(a._sortDate))
+    return merged
+  }, [calendarSections, sections])
 
   useEffect(() => {
     setSections(initialSections)
@@ -592,10 +612,30 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
 
   const shouldApplyDayFilters = isAnyDayFilterActive && activityLoaded && !activityLoading
 
+  useEffect(() => {
+    if (!walletAddress || !shouldApplyDayFilters || !hasMoreDaysRef.current) return
+
+    let cancelled = false
+
+    const preloadAllSections = async () => {
+      let guard = 0
+      while (!cancelled && hasMoreDaysRef.current && guard < 200) {
+        guard += 1
+        const loaded = await loadMoreDays()
+        if (!loaded) break
+      }
+    }
+
+    preloadAllSections()
+    return () => {
+      cancelled = true
+    }
+  }, [loadMoreDays, shouldApplyDayFilters, walletAddress])
+
   const filteredCalendarSections = useMemo(() => {
-    if (!shouldApplyDayFilters) return calendarSections
-    return calendarSections.filter(section => sectionHasMatchingDate(section, matchingDateSet))
-  }, [calendarSections, shouldApplyDayFilters, matchingDateSet])
+    if (!shouldApplyDayFilters) return calendarSourceSections
+    return calendarSourceSections.filter(section => sectionHasMatchingDate(section, matchingDateSet))
+  }, [calendarSourceSections, shouldApplyDayFilters, matchingDateSet])
 
   const visibleSections = useMemo(() => {
     if (!shouldApplyDayFilters) return sections
