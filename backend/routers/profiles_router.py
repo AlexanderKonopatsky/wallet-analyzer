@@ -63,6 +63,19 @@ def _parse_report_sections(markdown: str) -> tuple[list[dict], list[str]]:
     return sections, fingerprints
 
 
+def _build_calendar_sections(sections: list[dict]) -> list[dict]:
+    """Build lightweight section list for calendar without day content."""
+    return [
+        {
+            "date": section.get("date", ""),
+            "sort_date": section.get("sort_date", ""),
+            "original_index": section.get("original_index", idx),
+            "significance": section.get("significance", 3),
+        }
+        for idx, section in enumerate(sections)
+    ]
+
+
 def create_profiles_router(
     *,
     reports_dir: Path,
@@ -95,6 +108,7 @@ def create_profiles_router(
 
         markdown = report_path.read_text(encoding="utf-8")
         sections, fingerprints = _parse_report_sections(markdown)
+        calendar_sections = _build_calendar_sections(sections)
         total_sections = len(sections)
         meta = get_wallet_meta(wallet)
 
@@ -115,11 +129,13 @@ def create_profiles_router(
             }
             if days_offset == 0:
                 response["section_fingerprints"] = fingerprints
+                response["calendar_sections"] = calendar_sections
             return response
 
         return {
             "markdown": markdown,
             "sections": sections,
+            "calendar_sections": calendar_sections,
             "total_sections": total_sections,
             "has_more": False,
             "section_fingerprints": fingerprints,

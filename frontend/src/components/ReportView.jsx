@@ -83,6 +83,13 @@ function getReportSections(report) {
   return parseReport(report?.markdown).sections
 }
 
+function getCalendarSections(report, fallbackSections) {
+  if (Array.isArray(report?.calendar_sections)) {
+    return normalizeApiSections(report.calendar_sections)
+  }
+  return fallbackSections
+}
+
 const TX_PAGE_SIZE = 50
 
 const TX_TYPE_LABELS = {
@@ -278,19 +285,35 @@ const DayCard = memo(function DayCard({ id, date, content, walletAddress, isNew,
 
 function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount, updatedSectionIndices = new Set() }) {
   const initialSections = useMemo(() => getReportSections(report), [report])
+  const calendarSections = useMemo(
+    () => getCalendarSections(report, initialSections),
+    [report, initialSections]
+  )
   const [txCountDates, setTxCountDates] = useState(null)
   const [sections, setSections] = useState(initialSections)
   const [hasMoreDays, setHasMoreDays] = useState(Boolean(report?.has_more))
   const [loadingMoreDays, setLoadingMoreDays] = useState(false)
   const loadMoreRef = useRef(null)
   const loadingMoreRef = useRef(false)
+  const sectionsRef = useRef(initialSections)
+  const hasMoreDaysRef = useRef(Boolean(report?.has_more))
 
   useEffect(() => {
     setSections(initialSections)
     setHasMoreDays(Boolean(report?.has_more))
     setLoadingMoreDays(false)
     loadingMoreRef.current = false
+    sectionsRef.current = initialSections
+    hasMoreDaysRef.current = Boolean(report?.has_more)
   }, [initialSections, report?.has_more, walletAddress])
+
+  useEffect(() => {
+    sectionsRef.current = sections
+  }, [sections])
+
+  useEffect(() => {
+    hasMoreDaysRef.current = hasMoreDays
+  }, [hasMoreDays])
 
   useEffect(() => {
     let cancelled = false
@@ -326,21 +349,22 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
   }, [walletAddress])
 
   const loadMoreDays = useCallback(async () => {
-    if (!walletAddress || !hasMoreDays || loadingMoreRef.current) return
+    if (!walletAddress || !hasMoreDaysRef.current || loadingMoreRef.current) return false
 
     loadingMoreRef.current = true
     setLoadingMoreDays(true)
 
     try {
-      const offset = sections.length
+      const offset = sectionsRef.current.length
       const endpoint = `/api/report/${encodeURIComponent(walletAddress)}?days_offset=${offset}&days_limit=${REPORT_DAYS_PAGE_SIZE}`
       const res = await apiCall(endpoint)
       if (!res || !res.ok) {
-        return
+        return false
       }
 
       const data = await res.json()
       const nextSections = normalizeApiSections(data?.sections)
+      const nextHasMore = Boolean(data?.has_more)
 
       if (nextSections.length > 0) {
         setSections(prev => {
@@ -352,18 +376,22 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
             }
           })
           merged.sort((a, b) => b._sortDate.localeCompare(a._sortDate))
+          sectionsRef.current = merged
           return merged
         })
       }
 
-      setHasMoreDays(Boolean(data?.has_more))
+      setHasMoreDays(nextHasMore)
+      hasMoreDaysRef.current = nextHasMore
+      return nextSections.length > 0
     } catch {
       // Ignore load-more failures and keep already loaded days visible.
+      return false
     } finally {
       loadingMoreRef.current = false
       setLoadingMoreDays(false)
     }
-  }, [hasMoreDays, sections.length, walletAddress])
+  }, [walletAddress])
 
   useEffect(() => {
     const target = loadMoreRef.current
@@ -380,7 +408,33 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
 
     observer.observe(target)
     return () => observer.disconnect()
-  }, [hasMoreDays, loadMoreDays, sections.length])
+  }, [hasMoreDays, loadMoreDays])
+
+  useEffect(() => {
+    if (!walletAddress) return
+
+    const handleExpandDay = async (e) => {
+      const targetId = e.detail?.targetId
+      if (!targetId || !targetId.startsWith('day-')) return
+      if (document.getElementById(targetId)) return
+
+      let guard = 0
+      while (!document.getElementById(targetId) && hasMoreDaysRef.current && guard < 50) {
+        guard += 1
+        const loaded = await loadMoreDays()
+        if (!loaded) break
+      }
+
+      const targetEl = document.getElementById(targetId)
+      if (targetEl) {
+        document.dispatchEvent(new CustomEvent('expand-day', { detail: { targetId } }))
+        targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
+    }
+
+    document.addEventListener('expand-day', handleExpandDay)
+    return () => document.removeEventListener('expand-day', handleExpandDay)
+  }, [loadMoreDays, walletAddress])
 
   if (loading) {
     return (
@@ -423,7 +477,7 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
         </span>
       </div>
 
-      {sections.length > 0 && <CalendarStrip sections={sections} activeDates={txCountDates} />}
+      {calendarSections.length > 0 && <CalendarStrip sections={calendarSections} activeDates={txCountDates} />}
 
       <div className="report-sections">
         {sections.map((section, i) => (
