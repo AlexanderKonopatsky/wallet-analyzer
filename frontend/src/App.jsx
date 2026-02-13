@@ -949,21 +949,6 @@ function App() {
     setOldSectionCount(null)
 
     if (wallet) {
-      const walletLower = wallet.toLowerCase()
-      const isWalletVisible = wallets.some(w => w.address.toLowerCase() === walletLower)
-
-      // Wallet may be in hidden list after "delete"; unhide it on explicit re-add.
-      if (!isWalletVisible) {
-        try {
-          const unhideRes = await apiCall(`/api/wallets/${walletLower}/unhide`, { method: 'POST' })
-          if (unhideRes?.ok) {
-            await refreshWallets()
-          }
-        } catch (err) {
-          console.error('Failed to unhide wallet:', err)
-        }
-      }
-
       // Try to load existing report
       setLoading(true)
       try {
@@ -1004,7 +989,7 @@ function App() {
         setLoading(false)
       }
     }
-  }, [estimateCost, isMobileLayout, processReportData, refreshWallets, wallets])
+  }, [estimateCost, isMobileLayout, processReportData, refreshWallets])
 
   const handleLogin = (token, userData) => {
     setAuthToken(token, userData)
