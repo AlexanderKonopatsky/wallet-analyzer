@@ -76,6 +76,36 @@
   line-height: 1.7;
 }
 
+.chain-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -8px 0 14px;
+}
+
+.chain-filter-btn {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  color: #8b949e;
+  font-size: 0.76rem;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.chain-filter-btn:hover {
+  color: #c9d1d9;
+  border-color: #484f58;
+  background: #161b22;
+}
+
+.chain-filter-btn-active {
+  color: #58a6ff;
+  border-color: #1f6feb55;
+  background: #1f6feb22;
+}
+
 /* Day cards */
 .report-sections {
   display: flex;
@@ -440,6 +470,11 @@
   .calendar-strip {
     margin-bottom: 12px;
     padding: 10px 12px;
+  }
+
+  .chain-filter-bar {
+    margin: -4px 0 10px;
+    gap: 6px;
   }
 
   .day-card-header {

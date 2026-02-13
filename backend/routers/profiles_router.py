@@ -8,7 +8,7 @@ from typing import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from analyze import call_llm
+from analyze import call_llm, filter_transactions
 from auth import get_current_user, get_optional_user
 from db import Database, User, get_db
 from user_data_store import load_user_balance, save_user_balance
@@ -82,9 +82,131 @@ def _build_calendar_sections(sections: list[dict]) -> list[dict]:
     ]
 
 
+def _build_chain_index_payload(wallet: str, transactions: list[dict], source_last_updated: str | None) -> dict:
+    txs = filter_transactions(transactions)
+    dates_by_chain: dict[str, set[str]] = {}
+
+    for tx in txs:
+        chain_raw = tx.get("chain")
+        if not isinstance(chain_raw, str):
+            continue
+        chain = chain_raw.strip().lower()
+        if not chain:
+            continue
+
+        ts = tx.get("timestamp")
+        if not isinstance(ts, (int, float)):
+            continue
+
+        day = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+        dates_by_chain.setdefault(chain, set()).add(day)
+
+    return {
+        "wallet": wallet,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source_last_updated": source_last_updated,
+        "source_tx_count": len(transactions),
+        "available_chains": sorted(dates_by_chain.keys()),
+        "dates_by_chain": {
+            chain: sorted(days)
+            for chain, days in dates_by_chain.items()
+        },
+    }
+
+
+def _normalize_chain_filters(payload: dict | None) -> dict:
+    if not isinstance(payload, dict):
+        return {"available_chains": [], "dates_by_chain": {}}
+
+    available_raw = payload.get("available_chains")
+    dates_raw = payload.get("dates_by_chain")
+
+    available = []
+    if isinstance(available_raw, list):
+        for value in available_raw:
+            if isinstance(value, str):
+                chain = value.strip().lower()
+                if chain:
+                    available.append(chain)
+    available = sorted(set(available))
+
+    dates_by_chain: dict[str, list[str]] = {}
+    if isinstance(dates_raw, dict):
+        for chain, days in dates_raw.items():
+            if not isinstance(chain, str) or not isinstance(days, list):
+                continue
+            chain_key = chain.strip().lower()
+            if not chain_key:
+                continue
+            filtered_days = sorted({
+                day
+                for day in days
+                if isinstance(day, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", day)
+            })
+            if filtered_days:
+                dates_by_chain[chain_key] = filtered_days
+
+    if not available:
+        available = sorted(dates_by_chain.keys())
+
+    return {
+        "available_chains": available,
+        "dates_by_chain": dates_by_chain,
+    }
+
+
+def _load_chain_filters(
+    *,
+    wallet: str,
+    reports_dir: Path,
+    data_dir: Path,
+    source_last_updated: str | None,
+    source_tx_count: int | None,
+) -> dict:
+    chain_index_path = reports_dir / f"{wallet}_chains.json"
+
+    cached_payload: dict | None = None
+    if chain_index_path.exists():
+        try:
+            cached_payload = json.loads(chain_index_path.read_text(encoding="utf-8"))
+        except Exception:
+            cached_payload = None
+
+    if cached_payload and source_tx_count is not None:
+        if (
+            cached_payload.get("source_tx_count") == source_tx_count
+            and cached_payload.get("source_last_updated") == source_last_updated
+        ):
+            return _normalize_chain_filters(cached_payload)
+
+    data_file = data_dir / f"{wallet}.json"
+    if not data_file.exists():
+        return _normalize_chain_filters(cached_payload)
+
+    try:
+        data = json.loads(data_file.read_text(encoding="utf-8"))
+        txs = data.get("transactions", [])
+        if not isinstance(txs, list):
+            txs = []
+        rebuilt = _build_chain_index_payload(
+            wallet=wallet,
+            transactions=txs,
+            source_last_updated=data.get("last_updated"),
+        )
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        chain_index_path.write_text(
+            json.dumps(rebuilt, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return _normalize_chain_filters(rebuilt)
+    except Exception:
+        return _normalize_chain_filters(cached_payload)
+
+
 def create_profiles_router(
     *,
     reports_dir: Path,
+    data_dir: Path,
     check_wallet_ownership: Callable[[Database, int, str], bool],
     add_user_wallet: Callable[[Database, int, str], None],
     get_wallet_meta: Callable[[str], dict | None],
@@ -144,6 +266,21 @@ def create_profiles_router(
         calendar_sections = _build_calendar_sections(sections)
         total_sections = len(sections)
         meta = get_wallet_meta(wallet)
+        source_last_updated = meta["last_updated"] if meta else None
+        source_tx_count = meta["tx_count"] if meta else None
+
+        include_chain_filters = days_limit is None or days_offset == 0
+        chain_filters = (
+            _load_chain_filters(
+                wallet=wallet,
+                reports_dir=reports_dir,
+                data_dir=data_dir,
+                source_last_updated=source_last_updated,
+                source_tx_count=source_tx_count,
+            )
+            if include_chain_filters
+            else None
+        )
 
         if days_limit is not None:
             paginated_sections = sections[days_offset : days_offset + days_limit]
@@ -163,12 +300,14 @@ def create_profiles_router(
             if days_offset == 0:
                 response["section_fingerprints"] = fingerprints
                 response["calendar_sections"] = calendar_sections
+                response["chain_filters"] = chain_filters
             return response
 
         return {
             "markdown": markdown,
             "sections": sections,
             "calendar_sections": calendar_sections,
+            "chain_filters": chain_filters,
             "total_sections": total_sections,
             "has_more": False,
             "section_fingerprints": fingerprints,

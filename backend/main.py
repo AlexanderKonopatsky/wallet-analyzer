@@ -12,6 +12,7 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 
 API_URL = "https://feed-api.cielo.finance/api/v1/feed"
 DATA_DIR = Path(__file__).parent.parent / "data"
+REPORTS_DIR = DATA_DIR / "reports"
 
 
 def _load_api_keys() -> list[str]:
@@ -199,6 +200,58 @@ def load_existing_data(wallet: str) -> dict:
     return {"wallet": wallet, "last_updated": None, "transactions": []}
 
 
+def _build_chain_index_payload(wallet: str, transactions: list, source_last_updated: str | None) -> dict:
+    """Build a persistent map of chain -> active days for fast frontend filtering."""
+    filtered_txs = transactions
+    try:
+        # Keep chain/day mapping aligned with report logic.
+        from analyze import filter_transactions
+        filtered_txs = filter_transactions(transactions)
+    except Exception:
+        # Fallback to raw transactions if analyzer import fails.
+        filtered_txs = transactions
+
+    dates_by_chain: dict[str, set[str]] = {}
+    for tx in filtered_txs:
+        chain_raw = tx.get("chain")
+        if not isinstance(chain_raw, str):
+            continue
+
+        chain = chain_raw.strip().lower()
+        if not chain:
+            continue
+
+        ts = tx.get("timestamp")
+        if not isinstance(ts, (int, float)):
+            continue
+
+        day = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+        dates_by_chain.setdefault(chain, set()).add(day)
+
+    available_chains = sorted(dates_by_chain.keys())
+    serialized_dates = {
+        chain: sorted(days)
+        for chain, days in dates_by_chain.items()
+    }
+
+    return {
+        "wallet": wallet.lower(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source_last_updated": source_last_updated,
+        "source_tx_count": len(transactions),
+        "available_chains": available_chains,
+        "dates_by_chain": serialized_dates,
+    }
+
+
+def _save_chain_index(wallet: str, transactions: list, source_last_updated: str | None) -> None:
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    chain_index_path = REPORTS_DIR / f"{wallet.lower()}_chains.json"
+    payload = _build_chain_index_payload(wallet, transactions, source_last_updated)
+    with open(chain_index_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+
+
 def save_data(wallet: str, transactions: list) -> None:
     """Saves data to JSON file. Only updates last_updated if transactions changed."""
     DATA_DIR.mkdir(exist_ok=True)
@@ -222,6 +275,11 @@ def save_data(wallet: str, transactions: list) -> None:
 
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+
+    try:
+        _save_chain_index(wallet, transactions, last_updated)
+    except Exception as exc:
+        print(f"[Chains] Failed to save chain index for {wallet.lower()}: {exc}")
 
 
 def format_timestamp(ts: int) -> str:

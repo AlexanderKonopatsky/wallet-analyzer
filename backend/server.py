@@ -589,6 +589,7 @@ app.include_router(
 app.include_router(
     create_profiles_router(
         reports_dir=REPORTS_DIR,
+        data_dir=DATA_DIR,
         check_wallet_ownership=check_wallet_ownership,
         add_user_wallet=add_user_wallet,
         get_wallet_meta=get_wallet_meta,

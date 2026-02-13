@@ -90,6 +90,38 @@ function getCalendarSections(report, fallbackSections) {
   return fallbackSections
 }
 
+function extractSectionRange(section) {
+  const date = typeof section?.date === 'string' ? section.date : ''
+  const isoMatches = date.match(/\d{4}-\d{2}-\d{2}/g) || []
+  if (isoMatches.length === 0) return null
+
+  const start = isoMatches[0]
+  const end = isoMatches[isoMatches.length - 1]
+  return start <= end ? { start, end } : { start: end, end: start }
+}
+
+function sectionMatchesDateSet(section, activeDateSet) {
+  if (!activeDateSet || activeDateSet.size === 0) return true
+  const range = extractSectionRange(section)
+  if (!range) return false
+
+  for (const dateIso of activeDateSet) {
+    if (dateIso >= range.start && dateIso <= range.end) {
+      return true
+    }
+  }
+
+  return false
+}
+
+function formatChainLabel(chain) {
+  if (chain === 'bsc') return 'BSC'
+  if (chain === 'zksync') return 'zkSync'
+  if (chain === 'arbitrum') return 'Arbitrum'
+  if (chain === 'optimism') return 'Optimism'
+  return chain.charAt(0).toUpperCase() + chain.slice(1)
+}
+
 const TX_PAGE_SIZE = 50
 
 const TX_TYPE_LABELS = {
@@ -293,8 +325,12 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
   const [sections, setSections] = useState(initialSections)
   const [hasMoreDays, setHasMoreDays] = useState(Boolean(report?.has_more))
   const [loadingMoreDays, setLoadingMoreDays] = useState(false)
+  const [chainFilters, setChainFilters] = useState({ availableChains: [], datesByChain: {} })
+  const [selectedChains, setSelectedChains] = useState(new Set())
+  const [loadingAllForChainFilter, setLoadingAllForChainFilter] = useState(false)
   const loadMoreRef = useRef(null)
   const loadingMoreRef = useRef(false)
+  const loadingAllForChainFilterRef = useRef(false)
   const sectionsRef = useRef(initialSections)
   const hasMoreDaysRef = useRef(Boolean(report?.has_more))
 
@@ -314,6 +350,77 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
   useEffect(() => {
     hasMoreDaysRef.current = hasMoreDays
   }, [hasMoreDays])
+
+  useEffect(() => {
+    const raw = report?.chain_filters
+    const availableChains = Array.isArray(raw?.available_chains)
+      ? Array.from(new Set(raw.available_chains
+          .filter(chain => typeof chain === 'string' && chain.trim().length > 0)
+          .map(chain => chain.trim().toLowerCase())
+        )).sort()
+      : []
+
+    const datesByChainRaw = raw?.dates_by_chain
+    const datesByChain = {}
+    if (datesByChainRaw && typeof datesByChainRaw === 'object') {
+      Object.entries(datesByChainRaw).forEach(([chain, dates]) => {
+        if (typeof chain !== 'string' || !Array.isArray(dates)) return
+        const normalizedChain = chain.trim().toLowerCase()
+        if (!normalizedChain) return
+        datesByChain[normalizedChain] = Array.from(new Set(
+          dates.filter(day => typeof day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(day))
+        )).sort()
+      })
+    }
+
+    setChainFilters({ availableChains, datesByChain })
+    setSelectedChains(new Set())
+    setLoadingAllForChainFilter(false)
+    loadingAllForChainFilterRef.current = false
+  }, [report, walletAddress])
+
+  const selectedChainDateSet = useMemo(() => {
+    if (selectedChains.size === 0) return null
+
+    const selectedDates = new Set()
+    selectedChains.forEach(chain => {
+      const dates = chainFilters.datesByChain[chain] || []
+      dates.forEach(day => selectedDates.add(day))
+    })
+
+    return selectedDates
+  }, [selectedChains, chainFilters])
+
+  const selectedChainDates = useMemo(() => {
+    if (!selectedChainDateSet) return null
+    return Array.from(selectedChainDateSet).sort()
+  }, [selectedChainDateSet])
+
+  const visibleSections = useMemo(() => {
+    if (!selectedChainDateSet) return sections
+    return sections.filter(section => sectionMatchesDateSet(section, selectedChainDateSet))
+  }, [sections, selectedChainDateSet])
+
+  const visibleCalendarSections = useMemo(() => {
+    if (!selectedChainDateSet) return calendarSections
+    return calendarSections.filter(section => sectionMatchesDateSet(section, selectedChainDateSet))
+  }, [calendarSections, selectedChainDateSet])
+
+  const toggleChain = useCallback((chain) => {
+    setSelectedChains(prev => {
+      const next = new Set(prev)
+      if (next.has(chain)) {
+        next.delete(chain)
+      } else {
+        next.add(chain)
+      }
+      return next
+    })
+  }, [])
+
+  const clearChainFilters = useCallback(() => {
+    setSelectedChains(new Set())
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -411,6 +518,45 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
   }, [hasMoreDays, loadMoreDays])
 
   useEffect(() => {
+    if (!selectedChainDateSet) {
+      setLoadingAllForChainFilter(false)
+      loadingAllForChainFilterRef.current = false
+      return
+    }
+
+    if (!hasMoreDaysRef.current || loadingAllForChainFilterRef.current) {
+      return
+    }
+
+    let cancelled = false
+
+    const loadAllDaysForFilter = async () => {
+      loadingAllForChainFilterRef.current = true
+      setLoadingAllForChainFilter(true)
+
+      try {
+        let guard = 0
+        while (!cancelled && hasMoreDaysRef.current && guard < 200) {
+          guard += 1
+          const loaded = await loadMoreDays()
+          if (!loaded) break
+        }
+      } finally {
+        loadingAllForChainFilterRef.current = false
+        if (!cancelled) {
+          setLoadingAllForChainFilter(false)
+        }
+      }
+    }
+
+    loadAllDaysForFilter()
+
+    return () => {
+      cancelled = true
+    }
+  }, [selectedChainDateSet, loadMoreDays])
+
+  useEffect(() => {
     if (!walletAddress) return
 
     const handleExpandDay = async (e) => {
@@ -462,6 +608,8 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
     })
   }
 
+  const calendarActiveDates = selectedChainDates || txCountDates
+
   return (
     <div className="report-view">
       <div className="report-meta">
@@ -477,10 +625,34 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
         </span>
       </div>
 
-      {calendarSections.length > 0 && <CalendarStrip sections={calendarSections} activeDates={txCountDates} />}
+      {visibleCalendarSections.length > 0 && (
+        <CalendarStrip sections={visibleCalendarSections} activeDates={calendarActiveDates} />
+      )}
+
+      {chainFilters.availableChains.length > 0 && (
+        <div className="chain-filter-bar">
+          <button
+            type="button"
+            className={`chain-filter-btn ${selectedChains.size === 0 ? 'chain-filter-btn-active' : ''}`}
+            onClick={clearChainFilters}
+          >
+            All
+          </button>
+          {chainFilters.availableChains.map(chain => (
+            <button
+              key={chain}
+              type="button"
+              className={`chain-filter-btn ${selectedChains.has(chain) ? 'chain-filter-btn-active' : ''}`}
+              onClick={() => toggleChain(chain)}
+            >
+              {formatChainLabel(chain)}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="report-sections">
-        {sections.map((section, i) => (
+        {visibleSections.map((section, i) => (
           <DayCard
             key={i}
             id={`day-${section._sortDate}`}
@@ -500,14 +672,18 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
       {hasMoreDays && (
         <div className="report-load-more-anchor" ref={loadMoreRef}>
           <span className="report-load-more-text">
-            {loadingMoreDays ? 'Loading more days...' : 'Scroll to load more days'}
+            {(loadingMoreDays || loadingAllForChainFilter)
+              ? 'Loading more days...'
+              : 'Scroll to load more days'}
           </span>
         </div>
       )}
 
-      {sections.length === 0 && (
+      {visibleSections.length === 0 && (
         <div className="report-empty">
-          Report exists but has no day sections yet.
+          {selectedChains.size > 0
+            ? 'No days found for selected blockchains.'
+            : 'Report exists but has no day sections yet.'}
         </div>
       )}
     </div>
