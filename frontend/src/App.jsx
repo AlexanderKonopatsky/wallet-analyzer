@@ -40,6 +40,7 @@ function App() {
   const [balance, setBalance] = useState(0)
   const [backupBusy, setBackupBusy] = useState(false)
   const [importBusy, setImportBusy] = useState(false)
+  const [canManageDataBackup, setCanManageDataBackup] = useState(null)
   const [backups, setBackups] = useState([])
   const [backupsLoading, setBackupsLoading] = useState(false)
   const [backupAccessDenied, setBackupAccessDenied] = useState(false)
@@ -120,6 +121,58 @@ function App() {
 
     loadBalance()
   }, [user])
+
+  useEffect(() => {
+    if (!user) {
+      setCanManageDataBackup(null)
+      return
+    }
+
+    if (typeof user.can_manage_data_backup === 'boolean') {
+      setCanManageDataBackup(user.can_manage_data_backup)
+    } else {
+      setCanManageDataBackup(null)
+    }
+  }, [user])
+
+  useEffect(() => {
+    if (!user || canManageDataBackup !== null) return
+
+    let cancelled = false
+
+    const detectBackupAccess = async () => {
+      try {
+        const res = await apiCall('/api/admin/data-backups')
+        if (!res || cancelled) return
+
+        if (res.status === 403) {
+          setCanManageDataBackup(false)
+          setBackupAccessDenied(true)
+          setBackups([])
+          return
+        }
+
+        setCanManageDataBackup(true)
+        if (res.ok) {
+          const payload = await res.json().catch(() => ({}))
+          if (!cancelled) {
+            setBackupAccessDenied(false)
+            setBackups(Array.isArray(payload.backups) ? payload.backups : [])
+          }
+        }
+      } catch {
+        if (!cancelled) {
+          setCanManageDataBackup(true)
+        }
+      }
+    }
+
+    detectBackupAccess()
+
+    return () => {
+      cancelled = true
+    }
+  }, [user, canManageDataBackup])
 
   useEffect(() => {
     activeTasksRef.current = activeTasks
@@ -413,14 +466,17 @@ function App() {
       if (!res.ok) {
         const payload = await res.json().catch(() => ({}))
         if (res.status === 403) {
+          setCanManageDataBackup(false)
           setBackupAccessDenied(true)
           setBackups([])
           return
         }
+        setCanManageDataBackup(true)
         throw new Error(payload.detail || 'Failed to load backup history')
       }
 
       const payload = await res.json().catch(() => ({}))
+      setCanManageDataBackup(true)
       setBackupAccessDenied(false)
       setBackups(Array.isArray(payload.backups) ? payload.backups : [])
     } catch (err) {
@@ -431,10 +487,10 @@ function App() {
   }, [])
 
   const openBackupAdminView = useCallback(async () => {
-    if (!user?.can_manage_data_backup) return
+    if (canManageDataBackup !== true) return
     setActiveView('admin-backup')
     await loadBackupHistory()
-  }, [loadBackupHistory, user?.can_manage_data_backup])
+  }, [loadBackupHistory, canManageDataBackup])
 
   const downloadDataBackup = useCallback(async () => {
     setError(null)
@@ -955,7 +1011,7 @@ function App() {
   const taskEntries = Object.entries(activeTasks).filter(([, task]) =>
     task && typeof task === 'object'
   )
-  const canManageDataBackup = Boolean(user?.can_manage_data_backup)
+  const hasBackupAccess = canManageDataBackup === true
   const hasRunningTasks = taskEntries.some(([, task]) =>
     RUNNING_TASK_STATUSES.has(task.status)
   )
@@ -1024,7 +1080,7 @@ function App() {
           >
             Deposit
           </button>
-          {canManageDataBackup && (
+          {hasBackupAccess && (
             <button
               onClick={openBackupAdminView}
               className={`btn-admin ${activeView === 'admin-backup' ? 'btn-admin-active' : ''}`}
@@ -1121,7 +1177,7 @@ function App() {
 
           {activeView === 'payment' ? (
             <PaymentWidget onPaymentSuccess={refreshBalance} />
-          ) : activeView === 'admin-backup' && canManageDataBackup ? (
+          ) : activeView === 'admin-backup' && hasBackupAccess ? (
             <AdminBackupView
               backups={backups}
               loading={backupsLoading}
