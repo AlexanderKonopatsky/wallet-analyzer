@@ -9,6 +9,10 @@ Full-stack application for analyzing cryptocurrency wallet transactions. Fetches
 - **AI**: OpenRouter API (Google Gemini 3-Flash-Preview)
 - **Data API**: Cielo Finance API
 
+## Runtime Source Of Truth
+- Active backend runtime is `backend/server.py` (FastAPI, started by Uvicorn/Docker).
+- Legacy root-level Node prototype files were removed to avoid runtime ambiguity.
+
 ## Project Structure
 ```
 в”њв”Ђв”Ђ backend/               # Python backend

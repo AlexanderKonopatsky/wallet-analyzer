@@ -8,6 +8,7 @@ Backend logic for fetching transactions, AI analysis, and REST API.
 main.py          # Cielo Finance API client (fetch transactions)
 analyze.py       # AI analysis engine (Gemini via OpenRouter)
 categories.py    # Wallet classification (LLM-based)
+payment_provider.py # 1Click payment integration + token/address helpers
 server.py        # FastAPI REST API + background tasks
 ```
 
