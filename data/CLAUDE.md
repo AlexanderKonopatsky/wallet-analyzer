@@ -1,144 +1,60 @@
-# Data Directory
+﻿# Data Directory (`data/`)
 
-Contains JSON files with transaction data and wallet metadata.
+Runtime persistence for backend state.
 
-## Transaction Files Format
+## Top-Level Layout
+- `data/{wallet}.json` - shared transaction cache per wallet
+- `data/users.json` - user/auth database (users + verification codes)
+- `data/users/{id}/` - per-user runtime state
+- `data/reports/` - generated reports/profile artifacts
+- `data/backups/` - backup zip archives
 
-**File**: `{wallet_address}.json`
+## User-Scoped Files (`data/users/{id}/`)
+- `wallet_tags.json` - custom wallet labels
+- `hidden_wallets.json` - hidden wallet addresses
+- `refresh_status.json` - persisted task statuses for UI polling
+- `analysis_consents.json` - wallets explicitly allowed for paid analysis
+- `balance.json` - USD balance + transaction ledger
+- `payments.json` - payment provider order/history records
 
-**Structure**:
+## Shared Wallet Cache (`data/{wallet}.json`)
 ```json
 {
   "wallet": "0x...",
-  "last_updated": "2026-02-07T21:52:04.610787+00:00",
-  "transactions": [...]
+  "last_updated": "2026-02-13T12:00:00+00:00",
+  "transactions": []
 }
 ```
 
-### Transaction Object
+## Refresh Status Model (per user)
+Typical statuses:
+- `idle`
+- `cost_estimate`
+- `fetching`
+- `analyzing`
+- `done`
+- `error`
 
-Each transaction contains:
+Status entries may include fields like:
+- `detail`
+- `tx_count`
+- `cost_usd`
+- `percent`
+- `new_count`
+- `total_count`
+- `insufficient_balance`
 
-**Common fields (all types)**:
-- `wallet` — wallet address
-- `tx_hash` — transaction hash (unique key)
-- `tx_type` — type: `"transfer"`, `"swap"`, `"contract_execution"`, `"approve"`
-- `chain` — blockchain: `"ethereum"`, `"base"`, `"arbitrum"`, `"bnb"`, etc.
-- `timestamp` — Unix timestamp (seconds)
-- `block` — block number
-- `index` — transaction index in block
+## Balance Ledger (per user)
+`balance.json` stores:
+- `balance` (USD)
+- `transactions[]` with types such as:
+  - `signup_bonus`
+  - `analysis`
+  - `profile`
+  - `payment_topup`
+  - `deduction`
 
-**Transfer (`tx_type: "transfer"`)**:
-- `from`, `to` — sender/recipient addresses
-- `from_label`, `to_label` — human-readable labels
-- `amount` — token quantity
-- `amount_usd` — USD equivalent
-- `contract_address` — token address
-- `name`, `symbol` — token name and symbol
-- `token_price_usd` — token price in USD
-- `type` — token type: `"ERC20"`, `"native"`, etc.
-- `token_icon_link` — token icon URL
-
-**Swap (`tx_type: "swap"`)**:
-- `from`, `to` — addresses (usually same for swap)
-- `dex` — DEX name: `"KyberSwap"`, `"Uniswap"`, etc.
-- `token0_*` — input token data (address, amount, amount_usd, price_usd, name, symbol, icon_link)
-- `token1_*` — output token data (same fields)
-- `first_interaction` — first interaction with platform (bool)
-- `is_sell` — sell or buy (bool)
-- `platform`, `platform_uri`, `platform_ui` — optional platform metadata
-
-**Contract Execution (`tx_type: "contract_execution"`)**:
-- `from`, `to` — addresses
-- `method` — contract method name
-- `inputs`, `outputs` — optional parameters
-- `value_usd` — operation cost in USD
-
-**Approve (`tx_type: "approve"`)**:
-- `from` — wallet granting permission
-- `spender` — contract address receiving permission
-- `token` — token address
-- `amount` — approve limit (can be "unlimited")
-
-## Metadata Files
-
-### `wallet_tags.json`
-Custom names for wallets:
-```json
-{
-  "0x1111111111111111111111111111111111111111": "User_Wallet_1",
-  "0x2222222222222222222222222222222222222222": "User_Wallet_2"
-}
-```
-
-### `categories.json`
-Wallet categories (automatic classification):
-```json
-{
-  "wallets": {
-    "0x...": {
-      "category": "exchange_deposit",
-      "confidence": 0.95,
-      "reasoning": "CEX deposit address...",
-      "classified_at": "2026-02-07T..."
-    }
-  }
-}
-```
-
-**Categories**:
-- `cex_deposit` — exchange deposit address
-- `bridge` — cross-chain bridge
-- `defi_protocol` — DeFi protocol contract
-- `user_wallet` — regular user wallet
-- `unknown` — unable to classify
-
-### `excluded_wallets.json`
-Wallets excluded from analysis:
-```json
-{
-  "0x...": {
-    "is_excluded": true,
-    "category": "cex_deposit",
-    "confidence": 0.95,
-    "reasoning": "Binance hot wallet",
-    "added_at": "2026-02-07T...",
-    "source": "auto"
-  }
-}
-```
-
-- `source`: `"manual"` (user) or `"auto"` (LLM with high confidence)
-- To restore a wallet, set `is_excluded: false` manually
-
-### `refresh_status.json`
-Background refresh task status (persistent):
-```json
-{
-  "0x...": {
-    "status": "processing",
-    "stage": "analyzing",
-    "progress": "45%",
-    "started_at": "2026-02-07T12:00:00",
-    "error": null
-  }
-}
-```
-
-**Statuses**:
-- `processing` — in progress
-- `completed` — done
-- `error` — error occurred
-
-**Stages**:
-- `fetching` — fetching transactions
-- `analyzing` — AI analysis
-- `classifying` — classifying related wallets
-
-## Important Notes
-
-- Transactions sorted by `timestamp` (DESC — newest first)
-- Transaction unique key: `tx_hash`
-- `amount_usd` can be `0` for unpopular tokens
-- `from_label`/`to_label` generated by API (shortened addresses or known names)
-- API returns transactions paginated (100-1000 per request)
+## Notes
+- Files in `data/` are part of runtime state; treat edits carefully.
+- Backup/import endpoints preserve `data/backups/` during replace-mode imports.
+- Cleanup logic removes orphaned per-user task statuses for wallets no longer owned.

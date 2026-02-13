@@ -1,165 +1,72 @@
-# Frontend (React + Vite)
+﻿# Frontend (React + Vite)
 
-React 19 application with Vite 7 for visualizing cryptocurrency wallet analysis.
+## Purpose
+Single-page app for authenticated users to:
+- manage tracked wallets/categories/tags
+- view markdown reports and generated profiles
+- start/monitor analysis tasks
+- manage balance and deposits
+- run admin backup/import operations (if allowed)
 
-## Tech Stack
-- **React 19** вЂ” UI framework
-- **Vite 7** вЂ” dev server & bundler
-- **react-markdown** вЂ” markdown report rendering
-- **CSS Modules** вЂ” component styling
-
-## Project Structure
+## Current Structure
 ```
 src/
-в”њв”Ђв”Ђ main.jsx          # Entry point
-в”њв”Ђв”Ђ App.jsx           # Main app component (routing, state)
-в”њв”Ђв”Ђ App.css           # Global styles
-в”њв”Ђв”Ђ index.css         # Base styles
-в””в”Ђв”Ђ components/
-    в”њв”Ђв”Ђ WalletSidebar.jsx     # Wallet list + tags
-    в”њв”Ђв”Ђ WalletSidebar.css
-    в”њв”Ђв”Ђ ReportView.jsx        # Markdown report display
-    в”њв”Ђв”Ђ ReportView.css
-    в”њв”Ђв”Ђ ProfileView.jsx       # Wallet profile (AI-generated)
+  main.jsx
+  App.jsx
+  App.css
+  index.css
+  components/
+    WalletSidebar.jsx
+    ReportView.jsx
+    ProfileView.jsx
+    PaymentWidget.jsx
+    AdminBackupView.jsx
+    LoginPage.jsx
+    ActiveTasksPanel.jsx
+    CostModals.jsx
+    CalendarStrip.jsx
+  utils/
+    api.js
+    walletViewState.js
 ```
 
-## Components
+## App Composition
+- `App.jsx` is the stateful orchestrator.
+- `ActiveTasksPanel.jsx` renders running/cost-estimate tasks.
+- `CostModals.jsx` contains profile-cost + insufficient-balance modals.
+- `walletViewState.js` tracks viewed report state in `localStorage` and computes "new data" markers.
 
-### App.jsx
-**Responsibilities**:
-- Manage selected wallet (`selectedWallet` state)
-- Switch tabs: Report / Profile / Related
-- Load wallet list (`/api/wallets`)
-- Pass data to child components
+## API Client
+- `utils/api.js` is the only fetch wrapper.
+- Automatically attaches bearer token from `localStorage`.
+- On `401`, clears auth and redirects to `/`.
 
-**Key State**:
-```jsx
-const [wallets, setWallets] = useState([])           // List of wallets with metadata
-const [selectedWallet, setSelectedWallet] = useState(null)  // Selected wallet
-const [activeTab, setActiveTab] = useState('report')       // Current tab
-```
+## Main API Calls Used by App
+- Auth: `/api/auth/me`
+- Balance/settings: `/api/user/balance`, `/api/settings`
+- Wallets/tags/categories: `/api/wallets`, `/api/tags/*`, `/api/categories*`
+- Reports/profile: `/api/report/{wallet}`, `/api/profile/{wallet}*`
+- Tasks: `/api/active-tasks`, `/api/estimate-cost/{wallet}`, `/api/start-analysis/{wallet}`, `/api/cancel-analysis/{wallet}`, `/api/refresh-bulk`, `/api/refresh-status/{wallet}`
+- Payments: `/api/tokens`, `/api/quote`, `/api/payment/*`, `/api/payments`
+- Admin backup/import: `/api/admin/data-backup*`, `/api/admin/data-import`
 
-**API Endpoints Used**:
-- `GET /api/wallets` вЂ” get wallet list + metadata
+## Data Flow (Simplified)
+1. Authenticate -> load user and balance.
+2. Load wallets + active tasks.
+3. Select wallet -> load report/profile.
+4. Start estimate/analysis -> poll active/refresh status.
+5. Update UI state from backend statuses and persisted local viewed markers.
 
-### WalletSidebar.jsx
-**Responsibilities**:
-- Display wallet list with tags
-- Show update status indicator (processing / completed / error)
-- Refresh button for each wallet
-- Add new wallet
-- Edit tags (inline edit)
-
-**Key Features**:
-- Poll refresh status (`/api/refresh-status/{wallet}`) every 2 sec while task is active
-- Color indicators: рџ”„ processing, вњ… completed, вќЊ error
-- Inline tag editing (double click)
-
-**API Endpoints Used**:
-- `PUT /api/tags/{wallet}` вЂ” update tag
-- `POST /api/refresh/{wallet}` вЂ” start refresh (fetch + analyze)
-- `GET /api/refresh-status/{wallet}` вЂ” get refresh status
-
-### ReportView.jsx
-**Responsibilities**:
-- Load and display markdown report
-- Render via `react-markdown`
-- Show "related wallets" (addresses with highest activity)
-- Exclude/include buttons for related wallets
-
-**Key Features**:
-- **Related Wallets**: cards with addresses that had the most activity
-  - Display: address, amounts sent/received (USD), transaction count
-  - Buttons: "Show transactions", "Exclude", "Include", "Classify" (LLM)
-- **Batch Auto-Classification**: parallel classification of multiple related wallets
-  - UI shows progress for each request
-- **Transaction Details**: expandable lists of transactions for each related wallet
-  - Show: date, type, amount, token, chain
-
-**API Endpoints Used**:
-- `GET /api/report/{wallet}` вЂ” get markdown + related wallets
-- `GET /api/settings` вЂ” get settings (batch size, etc.)
-
-**Related Wallet Card Structure**:
-```jsx
-<div className="related-card">
-  <div className="address">{addr}</div>
-  <div className="stats">
-    Sent: ${sent} | Received: ${received}
-  </div>
-  <div className="classification">
-    {classification ? (
-      <span className={confidence >= 0.8 ? 'high' : 'medium'}>
-        {category} ({confidence}%)
-      </span>
-    ) : (
-      <button onClick={classify}>Classify</button>
-    )}
-  </div>
-  <div className="actions">
-    <button onClick={toggleTxs}>Show Txs</button>
-    <button onClick={exclude}>Exclude</button>
-  </div>
-</div>
-```
-
-### ProfileView.jsx
-**Responsibilities**:
-- Display AI-generated wallet user profile
-- Show behavior patterns, risk level, main activities
-
-**Data Source**: `reports/{wallet}_profile.json`
-
-**API Endpoints Used**:
-- `GET /api/profile/{wallet}` вЂ” get profile (if implemented)
-- Or load directly from `reports/` (static file)
-
-## Styling Conventions
-
-- **CSS Variables** (`:root`):
-  - `--primary-color`, `--bg-color`, `--text-color`, etc.
-  - Allow easy theme switching
-- **Component-specific CSS**:
-  - Each component has its own `.css` file
-  - Use BEM-like notation for class names
-
-## Data Flow
-
-1. **App.jsx** loads wallet list on mount
-2. User selects wallet в†’ `setSelectedWallet(addr)`
-3. **ReportView** loads report for `selectedWallet`
-4. User clicks "Refresh" in **WalletSidebar**
-   - POST `/api/refresh/{wallet}` is sent
-   - Background task starts (fetch в†’ analyze)
-   - Frontend polls `/api/refresh-status/{wallet}` every 2 sec
-   - On "completed" status, UI updates
-
-## Backend API Proxy
-
-Vite proxy configured in `vite.config.js`:
-```js
-server: {
-  proxy: {
-    '/api': 'http://localhost:8000'
-  }
-}
-```
-
-All `/api/*` requests are forwarded to FastAPI server (port 8000).
-
-## Development
-
+## Dev Commands
 ```bash
-npm install         # Install dependencies
-npm run dev         # Dev server (port 5173)
-npm run build       # Production build
-npm run preview     # Preview production build
+cd frontend
+npm install
+npm run dev
+npm run build
+npm run preview
 ```
 
-## Important Notes
-
-- **CORS**: Backend (server.py) configured for localhost:5173 and localhost:5174
-- **Polling**: WalletSidebar polls refresh status only while tasks are active
-- **Error Handling**: All fetch requests wrapped in try-catch with fallback UI
-- **Language**: Interface in English, reports in Russian
-- **React 19 Features**: Use new hooks (useTransition, useDeferredValue) for optimization
+## Notes
+- UI language is English.
+- Markdown/profile content is generated in Russian by backend prompts.
+- Vite proxies `/api` to backend (see `vite.config.js`).
