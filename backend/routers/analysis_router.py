@@ -121,8 +121,6 @@ def create_analysis_router(
             )
             result["usd"] = fmt_usd(tx.get("amount_usd", 0) or 0)
             result["platform"] = tx.get("platform", "") or ""
-            result["from_chain"] = from_chain
-            result["to_chain"] = to_chain
         elif tx_type == "wrap":
             action = tx.get("action", "?")
             result["description"] = f"{action} {fmt_amount(tx.get('amount', 0))} {tx.get('symbol', '?')}"
@@ -453,4 +451,3 @@ def create_analysis_router(
         return active
 
     return router
-
