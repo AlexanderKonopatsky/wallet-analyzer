@@ -159,23 +159,6 @@ async def get_current_user(
     return user
 
 
-async def get_optional_user(
-    authorization: Optional[str] = Header(None),
-    db: Database = Depends(get_db),
-) -> Optional[User]:
-    """FastAPI dependency: return current user when valid token is provided, else None."""
-    if not authorization or not authorization.startswith("Bearer "):
-        return None
-
-    token = authorization.replace("Bearer ", "")
-    payload = decode_jwt_token(token)
-    if not payload:
-        return None
-
-    user = db.get_user_by_id(payload.get("user_id"))
-    return user
-
-
 def verify_google_token(token: str) -> Optional[Dict]:
     """
     Verify Google OAuth ID token.

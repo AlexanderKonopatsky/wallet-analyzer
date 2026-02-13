@@ -17,8 +17,6 @@ import {
 
 const RUNNING_TASK_STATUSES = new Set(['fetching', 'analyzing'])
 const REPORT_DAYS_PAGE_SIZE = 30
-const DEFAULT_PUBLIC_DEMO_WALLET = '0xfeb016d0d14ac0fa6d69199608b0776d007203b2'
-const DEFAULT_PUBLIC_DEMO_TAG = 'Vitalik'
 
 function buildReportEndpoint(wallet) {
   const walletLower = wallet.toLowerCase()
@@ -31,9 +29,6 @@ function App() {
   // Auth state
   const [user, setUser] = useState(null)
   const [authChecking, setAuthChecking] = useState(true)
-  const [showLoginPage, setShowLoginPage] = useState(false)
-  const [publicDemoWallet, setPublicDemoWallet] = useState(DEFAULT_PUBLIC_DEMO_WALLET)
-  const [publicDemoTag, setPublicDemoTag] = useState(DEFAULT_PUBLIC_DEMO_TAG)
 
   // App state
   const [wallets, setWallets] = useState([])
@@ -107,77 +102,6 @@ function App() {
 
     checkAuth()
   }, [])
-
-  useEffect(() => {
-    if (authChecking || user || showLoginPage) return
-
-    let cancelled = false
-
-    const loadDemoReport = async () => {
-      setActiveView('report')
-      setProfile(null)
-      setReport(null)
-      setError(null)
-      setLoading(true)
-
-      let demoWallet = DEFAULT_PUBLIC_DEMO_WALLET
-      let demoTag = DEFAULT_PUBLIC_DEMO_TAG
-
-      try {
-        const settingsRes = await fetch('/api/settings')
-        if (settingsRes.ok) {
-          const settings = await settingsRes.json()
-          const settingsWallet = typeof settings?.public_demo_wallet === 'string'
-            ? settings.public_demo_wallet.trim().toLowerCase()
-            : ''
-          const settingsTag = typeof settings?.public_demo_wallet_name === 'string'
-            ? settings.public_demo_wallet_name.trim()
-            : ''
-
-          if (settingsWallet.startsWith('0x') && settingsWallet.length === 42) {
-            demoWallet = settingsWallet
-          }
-          if (settingsTag) {
-            demoTag = settingsTag
-          }
-        }
-      } catch {
-        // Use defaults when settings are unavailable.
-      }
-
-      if (cancelled) return
-
-      setPublicDemoWallet(demoWallet)
-      setPublicDemoTag(demoTag)
-      setSelectedWallet(demoWallet)
-
-      try {
-        const res = await apiCall(buildReportEndpoint(demoWallet))
-        if (!res) return
-        if (res.status === 404) throw new Error('Demo report is not ready yet')
-        if (!res.ok) throw new Error('Failed to load demo report')
-        const data = await res.json()
-        if (!cancelled) {
-          setReport(data)
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setReport(null)
-          setError(err.message || 'Failed to load demo report')
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false)
-        }
-      }
-    }
-
-    loadDemoReport()
-
-    return () => {
-      cancelled = true
-    }
-  }, [authChecking, showLoginPage, user])
 
   // Load balance when user is authenticated
   useEffect(() => {
@@ -1084,10 +1008,6 @@ function App() {
 
   const handleLogin = (token, userData) => {
     setAuthToken(token, userData)
-    setShowLoginPage(false)
-    setSelectedWallet('')
-    setReport(null)
-    setError(null)
     setUser(userData)
   }
 
@@ -1099,55 +1019,8 @@ function App() {
     return <div className="app-loading">Loading...</div>
   }
 
-  if (!user && showLoginPage) {
-    return <LoginPage onLogin={handleLogin} />
-  }
-
   if (!user) {
-    return (
-      <div className={`app ${isMobileLayout ? 'app-mobile' : ''}`}>
-        <header className="app-header">
-          <h1><span>DeFi</span> Wallet Monitor</h1>
-          <div className="user-menu">
-            <button
-              onClick={() => setShowLoginPage(true)}
-              className="btn-deposit"
-            >
-              Sign In
-            </button>
-          </div>
-        </header>
-
-        <div className="app-layout app-layout-guest">
-          <div className="app-content app-content-guest">
-            <div className="guest-preview-banner">
-              <div className="guest-preview-main">
-                <span className="guest-preview-label">Demo</span>
-                <strong>{publicDemoTag}</strong>
-                <span className="guest-preview-wallet">{publicDemoWallet}</span>
-              </div>
-              <button
-                className="btn btn-refresh"
-                onClick={() => setShowLoginPage(true)}
-              >
-                Sign in to add your wallet
-              </button>
-            </div>
-
-            {error && <div className="error-banner">{error}</div>}
-
-            <ReportView
-              report={report}
-              loading={loading}
-              walletTag={publicDemoTag}
-              walletAddress={report?.address || ''}
-              oldSectionCount={oldSectionCount}
-              updatedSectionIndices={updatedSectionIndices}
-            />
-          </div>
-        </div>
-      </div>
-    )
+    return <LoginPage onLogin={handleLogin} />
   }
 
   const taskEntries = Object.entries(activeTasks).filter(([, task]) =>

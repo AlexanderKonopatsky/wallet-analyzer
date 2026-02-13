@@ -13,8 +13,6 @@ def create_system_router(
     auto_refresh_time: str,
     data_backup_restricted: bool,
     data_import_max_mb: int,
-    public_demo_wallet: str,
-    public_demo_wallet_name: str,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -26,8 +24,6 @@ def create_system_router(
             "auto_refresh_time": auto_refresh_time,
             "data_backup_restricted": data_backup_restricted,
             "data_import_max_mb": data_import_max_mb,
-            "public_demo_wallet": public_demo_wallet,
-            "public_demo_wallet_name": public_demo_wallet_name,
         }
 
     @router.get("/api/user/balance")

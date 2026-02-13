@@ -38,9 +38,8 @@ export async function apiCall(endpoint, options = {}) {
     headers,
   })
 
-  // Handle 401 for authenticated sessions only.
-  // In guest mode (no token), some endpoints can legitimately return 401.
-  if (response.status === 401 && token) {
+  // Handle 401 - redirect to login
+  if (response.status === 401) {
     removeAuthToken()
     window.location.href = '/'
     return null

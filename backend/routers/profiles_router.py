@@ -1,4 +1,3 @@
-import os
 import hashlib
 import json
 import re
@@ -9,14 +8,9 @@ from typing import Callable
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from analyze import call_llm
-from auth import get_current_user, get_optional_user
+from auth import get_current_user
 from db import Database, User, get_db
 from user_data_store import load_user_balance, save_user_balance
-
-PUBLIC_DEMO_WALLET = os.getenv(
-    "PUBLIC_DEMO_WALLET",
-    "0xfeb016d0d14ac0fa6d69199608b0776d007203b2",
-).lower()
 
 
 def _parse_report_sections(markdown: str) -> tuple[list[dict], list[str]]:
@@ -118,7 +112,7 @@ def create_profiles_router(
         wallet: str,
         days_limit: int | None = Query(default=None, ge=1, le=200),
         days_offset: int = Query(default=0, ge=0),
-        current_user: User | None = Depends(get_optional_user),
+        current_user: User = Depends(get_current_user),
         db: Database = Depends(get_db),
     ):
         """Get wallet report (full markdown or paginated by day sections)."""
@@ -128,16 +122,12 @@ def create_profiles_router(
         if not report_path.exists():
             raise HTTPException(status_code=404, detail="No report found for this wallet")
 
-        if current_user is None:
-            if wallet != PUBLIC_DEMO_WALLET:
-                raise HTTPException(status_code=401, detail="Not authenticated")
-        else:
-            ensure_wallet_access(
-                db=db,
-                user_id=current_user.id,
-                wallet=wallet,
-                can_auto_attach=True,
-            )
+        ensure_wallet_access(
+            db=db,
+            user_id=current_user.id,
+            wallet=wallet,
+            can_auto_attach=True,
+        )
 
         markdown = report_path.read_text(encoding="utf-8")
         sections, fingerprints = _parse_report_sections(markdown)
