@@ -112,6 +112,36 @@ function sectionHasMatchingDate(section, matchingDateSet) {
   return false
 }
 
+function parseUsdAmount(rawValue) {
+  if (typeof rawValue === 'number') {
+    return Number.isFinite(rawValue) ? rawValue : null
+  }
+  if (typeof rawValue !== 'string') return null
+
+  const normalized = rawValue.trim().replace(/,/g, '').toUpperCase()
+  const match = normalized.match(/^\$?\s*(-?\d+(?:\.\d+)?)\s*([KMB])?$/)
+  if (!match) return null
+
+  const amount = Number(match[1])
+  if (!Number.isFinite(amount)) return null
+
+  const suffix = match[2] || ''
+  if (suffix === 'K') return amount * 1_000
+  if (suffix === 'M') return amount * 1_000_000
+  if (suffix === 'B') return amount * 1_000_000_000
+  return amount
+}
+
+function getTxVolumeUsd(tx) {
+  const numericVolume = Number(tx?.volume_usd)
+  if (Number.isFinite(numericVolume)) return numericVolume
+
+  const parsedFromUsd = parseUsdAmount(tx?.usd)
+  if (Number.isFinite(parsedFromUsd)) return parsedFromUsd
+
+  return 0
+}
+
 const TX_PAGE_SIZE = 50
 
 const TX_TYPE_LABELS = {
@@ -340,8 +370,8 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
           chainsInDay.add(chain)
         }
 
-        const volumeUsd = Number(tx?.volume_usd)
-        if (Number.isFinite(volumeUsd) && volumeUsd > maxTxUsdInDay) {
+        const volumeUsd = getTxVolumeUsd(tx)
+        if (volumeUsd > maxTxUsdInDay) {
           maxTxUsdInDay = volumeUsd
         }
       })
@@ -672,7 +702,7 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
               onChange={(event) => setVolumeThresholdInput(event.target.value)}
             />
             <span className="day-filter-hint">
-              Day matches when at least one transaction has volume above threshold.
+              Day matches when at least one transaction has volume &gt;= threshold.
             </span>
           </label>
         </div>
