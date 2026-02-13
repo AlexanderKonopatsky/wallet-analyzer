@@ -257,7 +257,7 @@ function App() {
     const createFingerprints = (markdown) => {
       const sections = markdown.match(/### \d{4}-\d{2}-\d{2}[^\n]*/g) || []
       return sections.map((section, idx) => {
-        const date = section.match(/### (\d{4}-\d{2}-\d{2}(?: вЂ” \d{4}-\d{2}-\d{2})?)/)?.[1] || ''
+        const date = section.match(/### (\d{4}-\d{2}-\d{2}(?: — \d{4}-\d{2}-\d{2})?)/)?.[1] || ''
         const nextSectionIdx = markdown.indexOf('### ', markdown.indexOf(section) + 1)
         const content = nextSectionIdx > 0
           ? markdown.slice(markdown.indexOf(section), nextSectionIdx)
@@ -1406,7 +1406,7 @@ function App() {
                 onClick={() => resolveProfileCostModal(false)}
                 aria-label="Close"
               >
-                Г—
+                ×
               </button>
             </div>
 
