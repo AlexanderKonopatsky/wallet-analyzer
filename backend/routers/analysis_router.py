@@ -47,11 +47,10 @@ def create_analysis_router(
     background_refresh: Callable[[str, int], None],
 ) -> APIRouter:
     router = APIRouter()
-    # Lightweight per-wallet cache for day activity summaries.
-    # key: wallet -> {"mtime": float, "summary": dict}
+    # key: wallet -> {"mtime": float, "payload": dict}
     activity_summary_cache: dict[str, dict] = {}
-    wallet_chains_dir = data_dir / "wallet_chains"
-    wallet_chains_dir.mkdir(parents=True, exist_ok=True)
+    activity_index_dir = data_dir / "index" / "activity"
+    activity_index_dir.mkdir(parents=True, exist_ok=True)
 
     def ensure_wallet_access(
         *,
@@ -319,50 +318,103 @@ def create_analysis_router(
 
         return result
 
-    def build_wallet_chains_index(wallet: str, data_file: Path) -> dict:
-        """Build and persist a lightweight chain list index for a wallet."""
-        raw_txs = load_transactions(wallet)
-        txs = filter_transactions(raw_txs)
+    def _activity_index_path(wallet: str) -> Path:
+        return activity_index_dir / f"{wallet}.json"
 
-        chains = set()
-        for tx in txs:
-            for chain_key in ("chain", "from_chain", "to_chain"):
-                chain_val = tx.get(chain_key)
-                if not isinstance(chain_val, str):
-                    continue
-                chain_clean = chain_val.strip().lower()
-                if chain_clean and chain_clean != "?":
-                    chains.add(chain_clean)
+    def _build_activity_payload(wallet: str, data_file: Path) -> dict:
+        """Build and persist wallet activity index used by day-activity and chains endpoints."""
+        raw_txs = load_transactions(wallet)
+        if not raw_txs:
+            raise HTTPException(status_code=404, detail="No transaction data found")
+
+        txs = filter_transactions(raw_txs)
+        day_groups = group_by_days(txs)
+
+        by_day = {}
+        all_chains = set()
+        for day, day_txs in day_groups.items():
+            chains = set()
+            max_volume_usd = 0.0
+
+            for tx in day_txs:
+                for chain_key in ("chain", "from_chain", "to_chain"):
+                    chain_val = tx.get(chain_key)
+                    if isinstance(chain_val, str):
+                        chain_clean = chain_val.strip().lower()
+                        if chain_clean and chain_clean != "?":
+                            chains.add(chain_clean)
+                            all_chains.add(chain_clean)
+
+                volume_usd = get_tx_usd(tx)
+                if not math.isfinite(volume_usd):
+                    volume_usd = 0.0
+                if volume_usd > max_volume_usd:
+                    max_volume_usd = volume_usd
+
+            by_day[day] = {
+                "chains": sorted(chains),
+                "max_volume_usd": max_volume_usd,
+            }
 
         payload = {
             "wallet": wallet,
-            "chains": sorted(chains),
+            "chains": sorted(all_chains),
+            "by_day": by_day,
             "data_mtime": data_file.stat().st_mtime,
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
 
-        index_file = wallet_chains_dir / f"{wallet}.json"
-        with open(index_file, "w", encoding="utf-8") as f:
+        with open(_activity_index_path(wallet), "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
 
+        activity_summary_cache[wallet] = {
+            "mtime": payload["data_mtime"],
+            "payload": {
+                "wallet": wallet,
+                "chains": payload["chains"],
+                "by_day": payload["by_day"],
+            },
+        }
         return payload
 
-    def load_or_build_wallet_chains_index(wallet: str, data_file: Path) -> dict:
-        """Load wallet chain index from file or rebuild when stale/missing."""
-        index_file = wallet_chains_dir / f"{wallet}.json"
+    def _load_or_build_activity_payload(wallet: str, data_file: Path) -> dict:
+        """Load activity index from memory/file or rebuild when stale."""
         data_mtime = data_file.stat().st_mtime
 
+        cached = activity_summary_cache.get(wallet)
+        if cached and abs(float(cached.get("mtime", 0.0) or 0.0) - data_mtime) < 1e-6:
+            payload = cached.get("payload") or {}
+            return {
+                "wallet": wallet,
+                "chains": payload.get("chains", []),
+                "by_day": payload.get("by_day", {}),
+                "data_mtime": data_mtime,
+            }
+
+        index_file = _activity_index_path(wallet)
         if index_file.exists():
             try:
                 with open(index_file, "r", encoding="utf-8") as f:
                     payload = json.load(f)
                 indexed_mtime = float(payload.get("data_mtime", 0.0) or 0.0)
-                if abs(indexed_mtime - data_mtime) < 1e-6 and isinstance(payload.get("chains"), list):
+                if (
+                    abs(indexed_mtime - data_mtime) < 1e-6
+                    and isinstance(payload.get("chains"), list)
+                    and isinstance(payload.get("by_day"), dict)
+                ):
+                    activity_summary_cache[wallet] = {
+                        "mtime": indexed_mtime,
+                        "payload": {
+                            "wallet": wallet,
+                            "chains": payload.get("chains", []),
+                            "by_day": payload.get("by_day", {}),
+                        },
+                    }
                     return payload
             except Exception:
                 pass
 
-        return build_wallet_chains_index(wallet, data_file)
+        return _build_activity_payload(wallet, data_file)
 
     @router.get("/api/day-activity/{wallet}")
     def get_day_activity(
@@ -400,50 +452,11 @@ def create_analysis_router(
         if not data_file.exists():
             raise HTTPException(status_code=404, detail="No transaction data found")
 
-        file_mtime = data_file.stat().st_mtime
-        cached = activity_summary_cache.get(wallet)
-        if cached and cached.get("mtime") == file_mtime:
-            return cached.get("summary", {})
-
-        raw_txs = load_transactions(wallet)
-        if not raw_txs:
-            raise HTTPException(status_code=404, detail="No transaction data found")
-
-        txs = filter_transactions(raw_txs)
-        day_groups = group_by_days(txs)
-
-        result = {}
-        all_chains = set()
-        for day, day_txs in day_groups.items():
-            chains = set()
-            max_volume_usd = 0.0
-
-            for tx in day_txs:
-                for chain_key in ("chain", "from_chain", "to_chain"):
-                    chain_val = tx.get(chain_key)
-                    if isinstance(chain_val, str):
-                        chain_clean = chain_val.strip().lower()
-                        if chain_clean and chain_clean != "?":
-                            chains.add(chain_clean)
-                            all_chains.add(chain_clean)
-
-                volume_usd = get_tx_usd(tx)
-                if not math.isfinite(volume_usd):
-                    volume_usd = 0.0
-                if volume_usd > max_volume_usd:
-                    max_volume_usd = volume_usd
-
-            result[day] = {
-                "chains": sorted(chains),
-                "max_volume_usd": max_volume_usd,
-            }
-
-        summary = {
-            "chains": sorted(all_chains),
-            "by_day": result,
+        payload = _load_or_build_activity_payload(wallet, data_file)
+        return {
+            "chains": payload.get("chains", []),
+            "by_day": payload.get("by_day", {}),
         }
-        activity_summary_cache[wallet] = {"mtime": file_mtime, "summary": summary}
-        return summary
 
     @router.get("/api/wallet-chains/{wallet}")
     def get_wallet_chains(
@@ -469,7 +482,7 @@ def create_analysis_router(
         if not data_file.exists():
             raise HTTPException(status_code=404, detail="No transaction data found")
 
-        payload = load_or_build_wallet_chains_index(wallet, data_file)
+        payload = _load_or_build_activity_payload(wallet, data_file)
         return {
             "wallet": wallet,
             "chains": payload.get("chains", []),

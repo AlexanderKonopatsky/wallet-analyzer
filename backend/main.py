@@ -12,6 +12,26 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 
 API_URL = "https://feed-api.cielo.finance/api/v1/feed"
 DATA_DIR = Path(__file__).parent.parent / "data"
+WALLET_META_INDEX_DIR = DATA_DIR / "index" / "wallet_meta"
+
+
+def _wallet_meta_index_path(wallet: str) -> Path:
+    return WALLET_META_INDEX_DIR / f"{wallet.lower()}.json"
+
+
+def _write_wallet_meta_index(wallet: str, data: dict, data_mtime: float) -> None:
+    """Persist lightweight wallet metadata index for fast reads in API routes."""
+    WALLET_META_INDEX_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "wallet": wallet.lower(),
+        "address": data.get("wallet", wallet),
+        "last_updated": data.get("last_updated"),
+        "tx_count": len(data.get("transactions", [])),
+        "data_mtime": data_mtime,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    with open(_wallet_meta_index_path(wallet), "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
 
 
 def _load_api_keys() -> list[str]:
@@ -222,6 +242,12 @@ def save_data(wallet: str, transactions: list) -> None:
 
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+
+    try:
+        _write_wallet_meta_index(wallet, data, filepath.stat().st_mtime)
+    except Exception as exc:
+        # Keep main data persistence resilient even when index update fails.
+        print(f"[Index] Failed to update wallet_meta index for {wallet.lower()}: {exc}")
 
 
 def format_timestamp(ts: int) -> str:
