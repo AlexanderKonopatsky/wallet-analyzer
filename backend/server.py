@@ -111,6 +111,9 @@ def startup_event():
     else:
         print("[Scheduler] Auto-refresh disabled (AUTO_REFRESH_ENABLED=false)")
 
+    # Ensure public demo report is always available for guest users.
+    ensure_public_demo_wallet_report()
+
 # Path relative to project root
 PROJECT_ROOT = Path(__file__).parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
@@ -147,6 +150,14 @@ PROFILE_SYSTEM_PROMPT = """Ты — опытный ончейн-аналитик
 # Auto-refresh settings
 AUTO_REFRESH_ENABLED = os.getenv("AUTO_REFRESH_ENABLED", "false").lower() == "true"
 AUTO_REFRESH_TIME = os.getenv("AUTO_REFRESH_TIME", "23:00")
+PUBLIC_DEMO_WALLET = os.getenv(
+    "PUBLIC_DEMO_WALLET",
+    "0xfeb016d0d14ac0fa6d69199608b0776d007203b2",
+).lower()
+PUBLIC_DEMO_WALLET_NAME = os.getenv(
+    "PUBLIC_DEMO_WALLET_NAME",
+    "Vitalik",
+).strip() or "Vitalik"
 
 # Background task status tracking: {wallet: {status, detail, thread_id}}
 refresh_tasks: dict[str, dict] = {}
@@ -336,6 +347,62 @@ def run_analysis_pipeline(wallet: str, user_id: int = None, progress_callback=No
     print(f"🎉 Analysis for wallet {wallet[:10]}... completed! Report saved.")
 
 
+def ensure_public_demo_wallet_report() -> None:
+    """Ensure a public demo report exists. Build it in background if missing."""
+    wallet_lower = PUBLIC_DEMO_WALLET
+    report_path = REPORTS_DIR / f"{wallet_lower}.md"
+
+    if report_path.exists():
+        print(f"[Demo] Public demo report already exists for {wallet_lower}")
+        return
+
+    existing_thread = active_threads.get(wallet_lower)
+    if existing_thread and existing_thread.is_alive():
+        print(f"[Demo] Demo report generation already running for {wallet_lower}")
+        return
+
+    def _worker() -> None:
+        try:
+            print(f"[Demo] Ensuring public demo report for {wallet_lower}")
+
+            state = load_state(wallet_lower)
+            chronology_parts = state.get("chronology_parts", [])
+            if chronology_parts:
+                save_report(wallet_lower, chronology_parts)
+                print(f"[Demo] Rebuilt report from existing state for {wallet_lower}")
+                return
+
+            data_file = DATA_DIR / f"{wallet_lower}.json"
+            if not data_file.exists():
+                print(f"[Demo] Fetching transactions for {wallet_lower}")
+                existing_data = load_existing_data(wallet_lower)
+                existing_txs = {
+                    tx["tx_hash"]: tx
+                    for tx in existing_data.get("transactions", [])
+                    if tx.get("tx_hash")
+                }
+                all_transactions = fetch_all_transactions(wallet_lower, existing_txs)
+                if all_transactions:
+                    all_transactions.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
+                    save_data(wallet_lower, all_transactions)
+
+            reloaded_data = load_existing_data(wallet_lower)
+            if not reloaded_data.get("transactions"):
+                print(f"[Demo] Cannot generate report for {wallet_lower}: no transactions")
+                return
+
+            run_analysis_pipeline(wallet_lower)
+        except Exception as exc:
+            print(f"[Demo] Failed to ensure report for {wallet_lower}: {exc}")
+        finally:
+            active_threads.pop(wallet_lower, None)
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    active_threads[wallet_lower] = thread
+    print(f"[Demo] Started background demo report generation for {wallet_lower}")
+
+
 def background_refresh(wallet: str, user_id: int) -> None:
     """Background task: fetch transactions then run analysis for specific user."""
     wallet_lower = wallet.lower()
@@ -493,6 +560,8 @@ app.include_router(
         auto_refresh_time=AUTO_REFRESH_TIME,
         data_backup_restricted=bool(DATA_BACKUP_ADMIN_EMAILS),
         data_import_max_mb=DATA_IMPORT_MAX_MB,
+        public_demo_wallet=PUBLIC_DEMO_WALLET,
+        public_demo_wallet_name=PUBLIC_DEMO_WALLET_NAME,
     )
 )
 app.include_router(
