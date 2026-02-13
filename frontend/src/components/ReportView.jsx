@@ -602,13 +602,9 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
     return sections.filter(section => sectionHasMatchingDate(section, matchingDateSet))
   }, [sections, shouldApplyDayFilters, matchingDateSet])
 
-  const toggleChainSelection = useCallback((chain) => {
-    setSelectedChains((prev) => {
-      if (prev.includes(chain)) {
-        return prev.filter((item) => item !== chain)
-      }
-      return [...prev, chain]
-    })
+  const handleChainFilterChange = useCallback((event) => {
+    const values = Array.from(event.target.selectedOptions || [], option => option.value)
+    setSelectedChains(values)
   }, [])
 
   if (loading) {
@@ -652,32 +648,13 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
         </span>
       </div>
 
-      {filteredCalendarSections.length > 0 && (
-        <CalendarStrip sections={filteredCalendarSections} activeDates={calendarActiveDates} />
-      )}
-
       <div className="day-filters">
-        <div className="day-filters-top">
-          <div className="day-filters-title-row">
-            <span className="day-filters-title">Activity Filters</span>
+        <div className="day-filters-header">
+          <span className="day-filters-title">Activity day filters</span>
+          <div className="day-filters-header-right">
             {shouldApplyDayFilters && (
-              <span className="day-filters-count">{matchingDates.length} days</span>
+              <span className="day-filters-count">{matchingDates.length} matching days</span>
             )}
-          </div>
-
-          <div className="day-filters-controls">
-            <label className="day-filter-volume">
-              <span className="day-filter-label">Min volume USD</span>
-              <input
-                className="day-filter-volume-input"
-                type="number"
-                min="0"
-                step="0.01"
-                placeholder="0"
-                value={volumeThresholdInput}
-                onChange={(event) => setVolumeThresholdInput(event.target.value)}
-              />
-            </label>
             <button
               type="button"
               className="day-filter-clear"
@@ -687,37 +664,53 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
               }}
               disabled={!isAnyDayFilterActive}
             >
-              Reset
+              Clear
             </button>
           </div>
         </div>
 
-        <div className="day-filter-chains">
-          <button
-            type="button"
-            className={`day-chain-chip ${selectedChains.length === 0 ? 'day-chain-chip-active' : ''}`}
-            onClick={() => setSelectedChains([])}
-          >
-            Any chain
-          </button>
-          {availableChains.map((chain) => (
-            <button
-              key={chain}
-              type="button"
-              className={`day-chain-chip ${selectedChains.includes(chain) ? 'day-chain-chip-active' : ''}`}
-              onClick={() => toggleChainSelection(chain)}
+        <div className="day-filters-grid">
+          <label className="day-filter-field">
+            <span className="day-filter-label">Blockchain</span>
+            <select
+              className="day-filter-multiselect"
+              multiple
+              value={selectedChains}
+              onChange={handleChainFilterChange}
+              size={Math.min(Math.max(availableChains.length, 3), 8)}
             >
-              {chain}
-            </button>
-          ))}
-        </div>
+              {availableChains.map(chain => (
+                <option key={chain} value={chain}>{chain}</option>
+              ))}
+            </select>
+            <span className="day-filter-hint">
+              {activityLoading
+                ? 'Loading blockchain activity...'
+                : 'Select one or more chains. Empty means no blockchain filter.'}
+            </span>
+          </label>
 
-        <span className="day-filter-hint">
-          {activityLoading
-            ? 'Loading activity data...'
-            : 'Day matches: selected blockchain(s) AND at least one tx with volume >= threshold.'}
-        </span>
+          <label className="day-filter-field">
+            <span className="day-filter-label">Volume threshold (USD)</span>
+            <input
+              className="day-filter-input"
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="0 = no volume filter"
+              value={volumeThresholdInput}
+              onChange={(event) => setVolumeThresholdInput(event.target.value)}
+            />
+            <span className="day-filter-hint">
+              Day matches when at least one transaction has volume &gt;= threshold.
+            </span>
+          </label>
+        </div>
       </div>
+
+      {filteredCalendarSections.length > 0 && (
+        <CalendarStrip sections={filteredCalendarSections} activeDates={calendarActiveDates} />
+      )}
 
       <div className="report-sections">
         {visibleSections.map((section, i) => (
