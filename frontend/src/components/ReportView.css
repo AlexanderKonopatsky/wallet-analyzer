@@ -408,6 +408,18 @@
   height: 60px;
 }
 
+.report-load-more-anchor {
+  display: flex;
+  justify-content: center;
+  padding: 14px 8px 6px;
+}
+
+.report-load-more-text {
+  color: #8b949e;
+  font-size: 0.78rem;
+  letter-spacing: 0.01em;
+}
+
 @media (max-width: 900px) {
   .report-meta {
     padding: 10px 12px;

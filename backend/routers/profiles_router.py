@@ -1,15 +1,66 @@
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from analyze import call_llm
 from auth import get_current_user
 from db import Database, User, get_db
 from user_data_store import load_user_balance, save_user_balance
+
+
+def _parse_report_sections(markdown: str) -> tuple[list[dict], list[str]]:
+    """Split report markdown into day sections and lightweight fingerprints."""
+    header_pattern = re.compile(r"^###\s+(.+)$", re.MULTILINE)
+    matches = list(header_pattern.finditer(markdown))
+    if not matches:
+        return [], []
+
+    sections: list[dict] = []
+    fingerprints: list[str] = []
+
+    for idx, match in enumerate(matches):
+        section_start = match.start()
+        section_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(markdown)
+        raw_section = markdown[section_start:section_end]
+        date = match.group(1).strip()
+
+        first_newline = raw_section.find("\n")
+        if first_newline == -1:
+            content = ""
+        else:
+            content = raw_section[first_newline + 1 :].strip()
+
+        sort_date_match = re.search(r"\d{4}-\d{2}-\d{2}", date)
+        sort_date = sort_date_match.group(0) if sort_date_match else ""
+
+        significance_match = re.search(
+            r"\*\*(?:Важность|Importance)\s*:\s*([1-5])\s*\*\*",
+            content,
+        )
+        significance = int(significance_match.group(1)) if significance_match else 3
+
+        fingerprint_date_match = re.search(
+            r"(\d{4}-\d{2}-\d{2}(?:\s*—\s*\d{4}-\d{2}-\d{2})?)",
+            date,
+        )
+        fingerprint_date = fingerprint_date_match.group(1) if fingerprint_date_match else ""
+        fingerprints.append(f"{fingerprint_date}:{len(raw_section)}")
+
+        sections.append({
+            "date": date,
+            "content": content,
+            "sort_date": sort_date,
+            "original_index": idx,
+            "significance": significance,
+        })
+
+    sections.sort(key=lambda item: item.get("sort_date", ""), reverse=True)
+    return sections, fingerprints
 
 
 def create_profiles_router(
@@ -27,10 +78,12 @@ def create_profiles_router(
     @router.get("/api/report/{wallet}")
     def get_report(
         wallet: str,
+        days_limit: int | None = Query(default=None, ge=1, le=200),
+        days_offset: int = Query(default=0, ge=0),
         current_user: User = Depends(get_current_user),
         db: Database = Depends(get_db),
     ):
-        """Get markdown report for a wallet."""
+        """Get wallet report (full markdown or paginated by day sections)."""
         wallet = wallet.lower()
         report_path = reports_dir / f"{wallet}.md"
 
@@ -41,10 +94,35 @@ def create_profiles_router(
             raise HTTPException(status_code=403, detail="Wallet not found in your list")
 
         markdown = report_path.read_text(encoding="utf-8")
+        sections, fingerprints = _parse_report_sections(markdown)
+        total_sections = len(sections)
         meta = get_wallet_meta(wallet)
+
+        if days_limit is not None:
+            paginated_sections = sections[days_offset : days_offset + days_limit]
+            has_more = (days_offset + len(paginated_sections)) < total_sections
+
+            response = {
+                "sections": paginated_sections,
+                "days_offset": days_offset,
+                "days_limit": days_limit,
+                "returned_sections": len(paginated_sections),
+                "total_sections": total_sections,
+                "has_more": has_more,
+                "last_updated": meta["last_updated"] if meta else None,
+                "tx_count": meta["tx_count"] if meta else 0,
+                "address": meta["address"] if meta else wallet,
+            }
+            if days_offset == 0:
+                response["section_fingerprints"] = fingerprints
+            return response
 
         return {
             "markdown": markdown,
+            "sections": sections,
+            "total_sections": total_sections,
+            "has_more": False,
+            "section_fingerprints": fingerprints,
             "last_updated": meta["last_updated"] if meta else None,
             "tx_count": meta["tx_count"] if meta else 0,
             "address": meta["address"] if meta else wallet,

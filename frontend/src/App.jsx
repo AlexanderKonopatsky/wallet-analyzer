@@ -16,6 +16,12 @@ import {
 } from './utils/walletViewState'
 
 const RUNNING_TASK_STATUSES = new Set(['fetching', 'analyzing'])
+const REPORT_DAYS_PAGE_SIZE = 30
+
+function buildReportEndpoint(wallet) {
+  const walletLower = wallet.toLowerCase()
+  return `/api/report/${walletLower}?days_limit=${REPORT_DAYS_PAGE_SIZE}&days_offset=0`
+}
 
 function App() {
   const MOBILE_BREAKPOINT = 900
@@ -302,7 +308,7 @@ function App() {
     setLoading(true)
     setError(null)
     try {
-      const res = await apiCall(`/api/report/${wallet.toLowerCase()}`)
+      const res = await apiCall(buildReportEndpoint(wallet))
       if (!res) return { missing: false, error: true }
       if (res.status === 404) {
         setReport(null)
@@ -889,7 +895,7 @@ function App() {
       // Try to load existing report
       setLoading(true)
       try {
-        const res = await apiCall(`/api/report/${wallet.toLowerCase()}`)
+        const res = await apiCall(buildReportEndpoint(wallet))
         if (!res) {
           setLoading(false)
           return

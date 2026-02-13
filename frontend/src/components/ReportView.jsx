@@ -4,6 +4,8 @@ import CalendarStrip from './CalendarStrip'
 import './ReportView.css'
 import { apiCall } from '../utils/api'
 
+const REPORT_DAYS_PAGE_SIZE = 30
+
 function parseReport(markdown) {
   if (!markdown) return { sections: [] }
 
@@ -43,6 +45,42 @@ function parseReport(markdown) {
   sections.sort((a, b) => b._sortDate.localeCompare(a._sortDate))
 
   return { sections }
+}
+
+function normalizeApiSections(rawSections) {
+  if (!Array.isArray(rawSections)) return []
+
+  const normalized = rawSections.map((section, idx) => {
+    const date = typeof section?.date === 'string' ? section.date : ''
+    const content = typeof section?.content === 'string' ? section.content : ''
+    const sortDate = typeof section?.sort_date === 'string'
+      ? section.sort_date
+      : (date.match(/\d{4}-\d{2}-\d{2}/)?.[0] || '')
+    const originalIndex = Number.isInteger(section?.original_index)
+      ? section.original_index
+      : idx
+    const significance = Number.isFinite(section?.significance)
+      ? Math.min(5, Math.max(1, Number(section.significance)))
+      : 3
+
+    return {
+      date,
+      content,
+      _sortDate: sortDate,
+      _originalIndex: originalIndex,
+      _significance: significance,
+    }
+  })
+
+  normalized.sort((a, b) => b._sortDate.localeCompare(a._sortDate))
+  return normalized
+}
+
+function getReportSections(report) {
+  if (Array.isArray(report?.sections)) {
+    return normalizeApiSections(report.sections)
+  }
+  return parseReport(report?.markdown).sections
 }
 
 const TX_PAGE_SIZE = 50
@@ -239,11 +277,20 @@ const DayCard = memo(function DayCard({ id, date, content, walletAddress, isNew,
 })
 
 function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount, updatedSectionIndices = new Set() }) {
-  const { sections } = useMemo(
-    () => parseReport(report?.markdown),
-    [report?.markdown]
-  )
+  const initialSections = useMemo(() => getReportSections(report), [report])
   const [txCountDates, setTxCountDates] = useState(null)
+  const [sections, setSections] = useState(initialSections)
+  const [hasMoreDays, setHasMoreDays] = useState(Boolean(report?.has_more))
+  const [loadingMoreDays, setLoadingMoreDays] = useState(false)
+  const loadMoreRef = useRef(null)
+  const loadingMoreRef = useRef(false)
+
+  useEffect(() => {
+    setSections(initialSections)
+    setHasMoreDays(Boolean(report?.has_more))
+    setLoadingMoreDays(false)
+    loadingMoreRef.current = false
+  }, [initialSections, report?.has_more, walletAddress])
 
   useEffect(() => {
     let cancelled = false
@@ -277,6 +324,63 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
       cancelled = true
     }
   }, [walletAddress])
+
+  const loadMoreDays = useCallback(async () => {
+    if (!walletAddress || !hasMoreDays || loadingMoreRef.current) return
+
+    loadingMoreRef.current = true
+    setLoadingMoreDays(true)
+
+    try {
+      const offset = sections.length
+      const endpoint = `/api/report/${encodeURIComponent(walletAddress)}?days_offset=${offset}&days_limit=${REPORT_DAYS_PAGE_SIZE}`
+      const res = await apiCall(endpoint)
+      if (!res || !res.ok) {
+        return
+      }
+
+      const data = await res.json()
+      const nextSections = normalizeApiSections(data?.sections)
+
+      if (nextSections.length > 0) {
+        setSections(prev => {
+          const seen = new Set(prev.map(item => item._originalIndex))
+          const merged = [...prev]
+          nextSections.forEach((item) => {
+            if (!seen.has(item._originalIndex)) {
+              merged.push(item)
+            }
+          })
+          merged.sort((a, b) => b._sortDate.localeCompare(a._sortDate))
+          return merged
+        })
+      }
+
+      setHasMoreDays(Boolean(data?.has_more))
+    } catch {
+      // Ignore load-more failures and keep already loaded days visible.
+    } finally {
+      loadingMoreRef.current = false
+      setLoadingMoreDays(false)
+    }
+  }, [hasMoreDays, sections.length, walletAddress])
+
+  useEffect(() => {
+    const target = loadMoreRef.current
+    if (!target || !hasMoreDays) return
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          loadMoreDays()
+        }
+      },
+      { rootMargin: '300px' }
+    )
+
+    observer.observe(target)
+    return () => observer.disconnect()
+  }, [hasMoreDays, loadMoreDays, sections.length])
 
   if (loading) {
     return (
@@ -338,6 +442,14 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
           />
         ))}
       </div>
+
+      {hasMoreDays && (
+        <div className="report-load-more-anchor" ref={loadMoreRef}>
+          <span className="report-load-more-text">
+            {loadingMoreDays ? 'Loading more days...' : 'Scroll to load more days'}
+          </span>
+        </div>
+      )}
 
       {sections.length === 0 && (
         <div className="report-empty">

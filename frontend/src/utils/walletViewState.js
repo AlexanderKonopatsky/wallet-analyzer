@@ -54,6 +54,7 @@ export function hasWalletNewData(wallet) {
 }
 
 function createFingerprints(markdown) {
+  if (!markdown) return []
   const sections = markdown.match(/### \d{4}-\d{2}-\d{2}[^\n]*/g) || []
   return sections.map((section) => {
     const date = section.match(/### (\d{4}-\d{2}-\d{2}(?: \u2014 \d{4}-\d{2}-\d{2})?)/)?.[1] || ''
@@ -72,7 +73,12 @@ export function processViewedReport(walletAddr, data) {
   const oldTxCount = oldState?.tx_count || 0
   const storedSectionCount = oldState?.section_count
 
-  const currentFingerprints = createFingerprints(data.markdown)
+  const currentFingerprints = Array.isArray(data.section_fingerprints)
+    ? data.section_fingerprints
+    : createFingerprints(data.markdown)
+  const currentSectionCount = Number.isFinite(data.total_sections)
+    ? data.total_sections
+    : countSections(data.markdown)
   const oldFingerprints = oldState?.section_fingerprints || []
 
   // Check if report was updated (new txs OR merged days)
@@ -98,7 +104,7 @@ export function processViewedReport(walletAddr, data) {
   localStorage.setItem(key, JSON.stringify({
     tx_count: data.tx_count,
     last_viewed: new Date().toISOString(),
-    section_count: countSections(data.markdown),
+    section_count: currentSectionCount,
     section_fingerprints: currentFingerprints
   }))
 
