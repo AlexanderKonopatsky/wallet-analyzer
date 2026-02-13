@@ -64,6 +64,104 @@
   color: #8b949e;
 }
 
+.day-filters {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+}
+
+.day-filters-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.day-filters-title {
+  color: #c9d1d9;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.day-filters-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.day-filters-count {
+  color: #58a6ff;
+  font-size: 0.75rem;
+}
+
+.day-filter-clear {
+  background: #21262d;
+  border: 1px solid #30363d;
+  color: #8b949e;
+  font-size: 0.72rem;
+  padding: 3px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.day-filter-clear:hover:not(:disabled) {
+  color: #c9d1d9;
+  border-color: #484f58;
+}
+
+.day-filter-clear:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.day-filters-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 12px;
+}
+
+.day-filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.day-filter-label {
+  color: #8b949e;
+  font-size: 0.75rem;
+}
+
+.day-filter-multiselect,
+.day-filter-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: #161b22;
+  border: 1px solid #30363d;
+  color: #c9d1d9;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 0.8rem;
+}
+
+.day-filter-multiselect {
+  resize: vertical;
+  min-height: 88px;
+}
+
+.day-filter-multiselect option {
+  padding: 4px 6px;
+}
+
+.day-filter-hint {
+  color: #6e7681;
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
 /* Summary block */
 .report-summary {
   padding: 16px 20px;
@@ -435,6 +533,21 @@
   .report-summary {
     padding: 12px 14px;
     margin-bottom: 12px;
+  }
+
+  .day-filters {
+    padding: 10px 12px;
+    margin-bottom: 12px;
+  }
+
+  .day-filters-header {
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+  }
+
+  .day-filters-grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
   }
 
   .calendar-strip {

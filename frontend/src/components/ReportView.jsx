@@ -90,6 +90,28 @@ function getCalendarSections(report, fallbackSections) {
   return fallbackSections
 }
 
+function extractSectionRange(section) {
+  const isoMatches = section?.date?.match(/\d{4}-\d{2}-\d{2}/g) || []
+  if (isoMatches.length === 0) return null
+
+  const start = isoMatches[0]
+  const end = isoMatches[isoMatches.length - 1]
+  return start <= end ? { start, end } : { start: end, end: start }
+}
+
+function sectionHasMatchingDate(section, matchingDateSet) {
+  if (!matchingDateSet || matchingDateSet.size === 0) return false
+  const range = extractSectionRange(section)
+  if (!range) return false
+
+  for (const dateIso of matchingDateSet) {
+    if (dateIso >= range.start && dateIso <= range.end) {
+      return true
+    }
+  }
+  return false
+}
+
 const TX_PAGE_SIZE = 50
 
 const TX_TYPE_LABELS = {
@@ -289,7 +311,11 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
     () => getCalendarSections(report, initialSections),
     [report, initialSections]
   )
-  const [txCountDates, setTxCountDates] = useState(null)
+  const [activityByDay, setActivityByDay] = useState(null)
+  const [activityLoading, setActivityLoading] = useState(false)
+  const [activityLoaded, setActivityLoaded] = useState(false)
+  const [selectedChains, setSelectedChains] = useState([])
+  const [volumeThresholdInput, setVolumeThresholdInput] = useState('')
   const [sections, setSections] = useState(initialSections)
   const [hasMoreDays, setHasMoreDays] = useState(Boolean(report?.has_more))
   const [loadingMoreDays, setLoadingMoreDays] = useState(false)
@@ -297,6 +323,87 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
   const loadingMoreRef = useRef(false)
   const sectionsRef = useRef(initialSections)
   const hasMoreDaysRef = useRef(Boolean(report?.has_more))
+
+  const dayActivityMap = useMemo(() => {
+    if (!activityByDay || typeof activityByDay !== 'object') return new Map()
+
+    const map = new Map()
+    Object.entries(activityByDay).forEach(([day, dayTxs]) => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !Array.isArray(dayTxs)) return
+
+      const chainsInDay = new Set()
+      let maxTxUsdInDay = 0
+
+      dayTxs.forEach((tx) => {
+        const chain = typeof tx?.chain === 'string' ? tx.chain.trim() : ''
+        if (chain) {
+          chainsInDay.add(chain)
+        }
+
+        const volumeUsd = Number(tx?.volume_usd)
+        if (Number.isFinite(volumeUsd) && volumeUsd > maxTxUsdInDay) {
+          maxTxUsdInDay = volumeUsd
+        }
+      })
+
+      map.set(day, { chainsInDay, maxTxUsdInDay })
+    })
+
+    return map
+  }, [activityByDay])
+
+  const availableChains = useMemo(() => {
+    const chains = new Set()
+    dayActivityMap.forEach(({ chainsInDay }) => {
+      chainsInDay.forEach(chain => chains.add(chain))
+    })
+    return [...chains].sort((left, right) => left.localeCompare(right))
+  }, [dayActivityMap])
+
+  const volumeThreshold = Number(volumeThresholdInput)
+  const isChainFilterActive = selectedChains.length > 0
+  const isVolumeFilterActive =
+    volumeThresholdInput.trim() !== '' &&
+    Number.isFinite(volumeThreshold) &&
+    volumeThreshold > 0
+  const isAnyDayFilterActive = isChainFilterActive || isVolumeFilterActive
+
+  const matchingDates = useMemo(() => {
+    if (dayActivityMap.size === 0) return []
+
+    const selectedChainSet = new Set(selectedChains)
+    const dates = []
+
+    dayActivityMap.forEach((stats, dateIso) => {
+      const chainMatch =
+        !isChainFilterActive ||
+        [...stats.chainsInDay].some(chain => selectedChainSet.has(chain))
+      const volumeMatch =
+        !isVolumeFilterActive ||
+        stats.maxTxUsdInDay >= volumeThreshold
+
+      if (chainMatch && volumeMatch) {
+        dates.push(dateIso)
+      }
+    })
+
+    dates.sort()
+    return dates
+  }, [
+    dayActivityMap,
+    isChainFilterActive,
+    isVolumeFilterActive,
+    selectedChains,
+    volumeThreshold,
+  ])
+
+  const matchingDateSet = useMemo(() => new Set(matchingDates), [matchingDates])
+
+  const calendarActiveDates = useMemo(() => {
+    if (dayActivityMap.size === 0) return null
+    if (!isAnyDayFilterActive) return [...dayActivityMap.keys()].sort()
+    return matchingDates
+  }, [dayActivityMap, isAnyDayFilterActive, matchingDates])
 
   useEffect(() => {
     setSections(initialSections)
@@ -319,34 +426,51 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
     let cancelled = false
 
     if (!walletAddress) {
-      setTxCountDates(null)
+      setActivityByDay(null)
+      setActivityLoading(false)
+      setActivityLoaded(false)
       return () => {
         cancelled = true
       }
     }
 
-    apiCall(`/api/tx-counts/${encodeURIComponent(walletAddress)}`)
+    setActivityLoading(true)
+    setActivityLoaded(false)
+    apiCall(`/api/transactions/${encodeURIComponent(walletAddress)}`)
       .then(res => (res && res.ok ? res.json() : null))
       .then(data => {
         if (cancelled) return
-        if (!data || typeof data !== 'object') {
-          setTxCountDates(null)
-          return
-        }
 
-        const dates = Object.entries(data)
-          .filter(([day, count]) => /^\d{4}-\d{2}-\d{2}$/.test(day) && Number(count) > 0)
-          .map(([day]) => day)
-        setTxCountDates(dates)
+        setActivityByDay(data && typeof data === 'object' ? data : {})
       })
       .catch(() => {
-        if (!cancelled) setTxCountDates(null)
+        if (!cancelled) setActivityByDay({})
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setActivityLoading(false)
+          setActivityLoaded(true)
+        }
       })
 
     return () => {
       cancelled = true
     }
   }, [walletAddress])
+
+  useEffect(() => {
+    setSelectedChains([])
+    setVolumeThresholdInput('')
+  }, [walletAddress])
+
+  useEffect(() => {
+    if (availableChains.length === 0) {
+      setSelectedChains([])
+      return
+    }
+    const availableSet = new Set(availableChains)
+    setSelectedChains(prev => prev.filter(chain => availableSet.has(chain)))
+  }, [availableChains])
 
   const loadMoreDays = useCallback(async () => {
     if (!walletAddress || !hasMoreDaysRef.current || loadingMoreRef.current) return false
@@ -436,6 +560,23 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
     return () => document.removeEventListener('expand-day', handleExpandDay)
   }, [loadMoreDays, walletAddress])
 
+  const shouldApplyDayFilters = isAnyDayFilterActive && activityLoaded && !activityLoading
+
+  const filteredCalendarSections = useMemo(() => {
+    if (!shouldApplyDayFilters) return calendarSections
+    return calendarSections.filter(section => sectionHasMatchingDate(section, matchingDateSet))
+  }, [calendarSections, shouldApplyDayFilters, matchingDateSet])
+
+  const visibleSections = useMemo(() => {
+    if (!shouldApplyDayFilters) return sections
+    return sections.filter(section => sectionHasMatchingDate(section, matchingDateSet))
+  }, [sections, shouldApplyDayFilters, matchingDateSet])
+
+  const handleChainFilterChange = useCallback((event) => {
+    const values = Array.from(event.target.selectedOptions || [], option => option.value)
+    setSelectedChains(values)
+  }, [])
+
   if (loading) {
     return (
       <div className="report-loading">
@@ -477,12 +618,74 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
         </span>
       </div>
 
-      {calendarSections.length > 0 && <CalendarStrip sections={calendarSections} activeDates={txCountDates} />}
+      <div className="day-filters">
+        <div className="day-filters-header">
+          <span className="day-filters-title">Activity day filters</span>
+          <div className="day-filters-header-right">
+            {shouldApplyDayFilters && (
+              <span className="day-filters-count">{matchingDates.length} matching days</span>
+            )}
+            <button
+              type="button"
+              className="day-filter-clear"
+              onClick={() => {
+                setSelectedChains([])
+                setVolumeThresholdInput('')
+              }}
+              disabled={!isAnyDayFilterActive}
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+
+        <div className="day-filters-grid">
+          <label className="day-filter-field">
+            <span className="day-filter-label">Blockchain</span>
+            <select
+              className="day-filter-multiselect"
+              multiple
+              value={selectedChains}
+              onChange={handleChainFilterChange}
+              size={Math.min(Math.max(availableChains.length, 3), 8)}
+            >
+              {availableChains.map(chain => (
+                <option key={chain} value={chain}>{chain}</option>
+              ))}
+            </select>
+            <span className="day-filter-hint">
+              {activityLoading
+                ? 'Loading blockchain activity...'
+                : 'Select one or more chains. Empty means no blockchain filter.'}
+            </span>
+          </label>
+
+          <label className="day-filter-field">
+            <span className="day-filter-label">Volume threshold (USD)</span>
+            <input
+              className="day-filter-input"
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="0 = no volume filter"
+              value={volumeThresholdInput}
+              onChange={(event) => setVolumeThresholdInput(event.target.value)}
+            />
+            <span className="day-filter-hint">
+              Day matches when at least one transaction has volume above threshold.
+            </span>
+          </label>
+        </div>
+      </div>
+
+      {filteredCalendarSections.length > 0 && (
+        <CalendarStrip sections={filteredCalendarSections} activeDates={calendarActiveDates} />
+      )}
 
       <div className="report-sections">
-        {sections.map((section, i) => (
+        {visibleSections.map((section, i) => (
           <DayCard
-            key={i}
+            key={`${section._sortDate}-${section._originalIndex ?? i}`}
             id={`day-${section._sortDate}`}
             date={section.date}
             content={section.content}
@@ -508,6 +711,12 @@ function ReportView({ report, loading, walletTag, walletAddress, oldSectionCount
       {sections.length === 0 && (
         <div className="report-empty">
           Report exists but has no day sections yet.
+        </div>
+      )}
+
+      {sections.length > 0 && shouldApplyDayFilters && visibleSections.length === 0 && (
+        <div className="report-empty">
+          No activity days match current filters.
         </div>
       )}
     </div>

@@ -22,7 +22,7 @@ function getSectionDates(section, activeDateSet) {
   const range = extractSectionRange(section)
   if (!range) return []
 
-  if (!activeDateSet || activeDateSet.size === 0) {
+  if (!activeDateSet) {
     return fallbackRangeDates(range)
   }
 
@@ -33,7 +33,7 @@ function getSectionDates(section, activeDateSet) {
     }
   })
 
-  return dates.length > 0 ? dates : fallbackRangeDates(range)
+  return dates
 }
 
 function CalendarStrip({ sections, activeDates }) {
