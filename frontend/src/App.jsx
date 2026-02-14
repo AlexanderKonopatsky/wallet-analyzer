@@ -910,12 +910,14 @@ function App() {
 
       await res.json().catch(() => ({}))
 
+      await refreshBalance()
+
       // Start monitoring all tasks
       startMonitoring()
     } catch (err) {
       setError(err.message)
     }
-  }, [startMonitoring])
+  }, [refreshBalance, startMonitoring])
 
   const cancelAnalysis = useCallback(async (wallet) => {
     if (!wallet) return
@@ -964,12 +966,14 @@ function App() {
 
       await res.json().catch(() => ({}))
 
+      await refreshBalance()
+
       // Start monitoring all tasks
       startMonitoring()
     } catch (err) {
       setError(err.message)
     }
-  }, [startMonitoring])
+  }, [refreshBalance, startMonitoring])
 
   const startBulkRefresh = useCallback(async (categoryId = 'all') => {
     setError(null)

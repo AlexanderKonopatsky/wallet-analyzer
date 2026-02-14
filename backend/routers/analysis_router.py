@@ -1,5 +1,6 @@
 import os
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -19,10 +20,11 @@ from db import Database, User, get_db
 from main import fetch_all_transactions, load_existing_data, save_data
 from user_data_store import (
     grant_analysis_consent,
-    load_analysis_consents,
+    load_user_balance,
     load_hidden_wallets,
     load_refresh_status,
     revoke_analysis_consent,
+    save_user_balance,
     save_refresh_status,
 )
 
@@ -40,7 +42,7 @@ def create_analysis_router(
     chain_explorers: dict[str, str],
     check_wallet_ownership: Callable[[Database, int, str], bool],
     add_user_wallet: Callable[[Database, int, str], None],
-    background_refresh: Callable[[str, int], None],
+    background_refresh: Callable[[str, int, bool], None],
 ) -> APIRouter:
     router = APIRouter()
 
@@ -61,6 +63,57 @@ def create_analysis_router(
                 return
 
         raise HTTPException(status_code=403, detail="Wallet not found in your list")
+
+    def calculate_analysis_cost(wallet: str) -> tuple[int, float]:
+        """Calculate analysis cost from currently cached transactions."""
+        existing_data = load_existing_data(wallet)
+        tx_count = len(existing_data.get("transactions", []))
+        cost_per_1000 = float(os.getenv("COST_PER_1000_TX", "0.20"))
+        cost_multiplier = float(os.getenv("COST_MULTIPLIER", "1.0"))
+        analysis_cost = round((tx_count / 1000) * cost_per_1000 * cost_multiplier, 2)
+        return tx_count, analysis_cost
+
+    def charge_analysis_on_start(*, user_id: int, wallet: str) -> dict:
+        """Charge user balance immediately when analysis is started."""
+        wallet_lower = wallet.lower()
+        tx_count, analysis_cost = calculate_analysis_cost(wallet_lower)
+
+        balance_data = load_user_balance(user_id)
+        current_balance = float(balance_data.get("balance", 0.0) or 0.0)
+        if current_balance < analysis_cost:
+            user_refresh_tasks = load_refresh_status(user_id)
+            user_refresh_tasks[wallet_lower] = {
+                "status": "cost_estimate",
+                "detail": f"Insufficient balance: need ${analysis_cost:.2f}, have ${current_balance:.2f}",
+                "tx_count": tx_count,
+                "cost_usd": analysis_cost,
+                "required_cost_usd": analysis_cost,
+                "balance_usd": round(current_balance, 2),
+                "insufficient_balance": True,
+            }
+            save_refresh_status(user_id, user_refresh_tasks)
+            refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
+            raise HTTPException(
+                status_code=402,
+                detail=f"Insufficient balance: need ${analysis_cost:.2f}, have ${current_balance:.2f}",
+            )
+
+        balance_data["balance"] = round(current_balance - analysis_cost, 2)
+        balance_data.setdefault("transactions", []).append({
+            "type": "analysis",
+            "amount": analysis_cost,
+            "wallet": wallet_lower,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "charged_at": "start",
+            "billing_source": "formula",
+        })
+        save_user_balance(user_id, balance_data)
+
+        return {
+            "tx_count": tx_count,
+            "cost_usd": analysis_cost,
+            "balance_usd": round(balance_data["balance"], 2),
+        }
 
     def format_tx_for_frontend(tx: dict) -> dict:
         """Format a transaction for display in the frontend."""
@@ -351,15 +404,17 @@ def create_analysis_router(
             current = user_refresh_tasks.get(wallet_lower, {})
             return {"status": "already_running", "detail": current.get("detail", "")}
 
+        charge_info = charge_analysis_on_start(user_id=current_user.id, wallet=wallet_lower)
+
         user_refresh_tasks[wallet_lower] = {"status": "fetching", "detail": "Starting..."}
         save_refresh_status(current_user.id, user_refresh_tasks)
         refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
 
-        thread = threading.Thread(target=background_refresh, args=(wallet, current_user.id), daemon=False)
+        thread = threading.Thread(target=background_refresh, args=(wallet, current_user.id, True), daemon=False)
         thread.start()
         active_threads[wallet_lower] = thread
 
-        return {"status": "started"}
+        return {"status": "started", "charge": charge_info}
 
     @router.post("/api/cancel-analysis/{wallet}")
     def cancel_analysis(
@@ -402,13 +457,13 @@ def create_analysis_router(
             return {"status": "no_wallets", "started": []}
 
         hidden_wallets = load_hidden_wallets(current_user.id)
-        consented_wallets = load_analysis_consents(current_user.id)
 
         started = []
         already_running = []
         skipped_unauthorized = []
         skipped_hidden = []
         skipped_no_consent = []
+        skipped_insufficient_balance = []
         user_refresh_tasks = load_refresh_status(current_user.id)
         seen_wallets = set()
 
@@ -427,14 +482,13 @@ def create_analysis_router(
                 skipped_unauthorized.append(wallet_lower)
                 continue
 
-            if wallet_lower not in consented_wallets:
-                skipped_no_consent.append(wallet_lower)
-                continue
-
             existing_thread = active_threads.get(wallet_lower)
             if existing_thread and existing_thread.is_alive():
                 already_running.append(wallet_lower)
                 continue
+
+            # Manual bulk refresh implies user consent for paid analysis.
+            grant_analysis_consent(current_user.id, wallet_lower)
 
             user_refresh_tasks[wallet_lower] = {"status": "fetching", "detail": "Starting..."}
             save_refresh_status(current_user.id, user_refresh_tasks)
@@ -452,6 +506,7 @@ def create_analysis_router(
             "skipped_unauthorized": skipped_unauthorized,
             "skipped_hidden": skipped_hidden,
             "skipped_no_consent": skipped_no_consent,
+            "skipped_insufficient_balance": skipped_insufficient_balance,
             "total": len(seen_wallets),
         }
 

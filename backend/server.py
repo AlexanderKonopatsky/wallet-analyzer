@@ -37,6 +37,7 @@ from analyze import (
     parse_llm_response,
     extract_day_summaries,
     build_context_for_llm,
+    capture_openrouter_usage,
     SYSTEM_PROMPT,
     merge_chronology_parts,
 )
@@ -403,7 +404,7 @@ def ensure_public_demo_wallet_report() -> None:
     print(f"[Demo] Started background demo report generation for {wallet_lower}")
 
 
-def background_refresh(wallet: str, user_id: int) -> None:
+def background_refresh(wallet: str, user_id: int, already_charged: bool = False) -> None:
     """Background task: fetch transactions then run analysis for specific user."""
     wallet_lower = wallet.lower()
     try:
@@ -464,44 +465,6 @@ def background_refresh(wallet: str, user_id: int) -> None:
             refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
             return
 
-        # Calculate cost and deduct from balance
-        tx_count = len(reloaded_data["transactions"])
-        cost_per_1000 = float(os.getenv("COST_PER_1000_TX", "0.20"))
-        cost_multiplier = float(os.getenv("COST_MULTIPLIER", "1.0"))
-        analysis_cost = round((tx_count / 1000) * cost_per_1000 * cost_multiplier, 2)
-
-        # Deduct from balance
-        balance_data = load_user_balance(user_id)
-        current_balance = float(balance_data.get("balance", 0.0) or 0.0)
-        if current_balance < analysis_cost:
-            print(f"[Refresh] Insufficient balance for {wallet_lower}: need ${analysis_cost}, have ${current_balance}", flush=True)
-            user_refresh_tasks = load_refresh_status(user_id)
-            user_refresh_tasks[wallet_lower] = {
-                "status": "cost_estimate",
-                "detail": f"Insufficient balance: need ${analysis_cost:.2f}, have ${current_balance:.2f}",
-                "tx_count": tx_count,
-                "cost_usd": analysis_cost,
-                "required_cost_usd": analysis_cost,
-                "balance_usd": round(current_balance, 2),
-                "insufficient_balance": True,
-            }
-            save_refresh_status(user_id, user_refresh_tasks)
-            refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
-            return
-
-        # Deduct cost from balance
-        balance_data["balance"] = current_balance - analysis_cost
-        if "transactions" not in balance_data:
-            balance_data["transactions"] = []
-        balance_data["transactions"].append({
-            "type": "analysis",
-            "amount": analysis_cost,
-            "wallet": wallet_lower,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-        save_user_balance(user_id, balance_data)
-        print(f"[Refresh] Deducted ${analysis_cost} for analysis. Balance: ${balance_data['balance']}", flush=True)
-
         print(f"[Refresh] Step 2: Analyzing transactions for {wallet_lower}", flush=True)
         user_refresh_tasks = load_refresh_status(user_id)
         user_refresh_tasks[wallet_lower] = {"status": "analyzing", "detail": "Analyzing transactions with AI...", "percent": 0}
@@ -521,11 +484,58 @@ def background_refresh(wallet: str, user_id: int) -> None:
             save_refresh_status(user_id, user_refresh_tasks)
             refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
 
-        run_analysis_pipeline(wallet, user_id=user_id, progress_callback=analysis_progress)
+        if already_charged:
+            # start-analysis already charged by formula at task start.
+            run_analysis_pipeline(wallet, user_id=user_id, progress_callback=analysis_progress)
+            actual_cost = 0.0
+            llm_calls = 0
+            print(f"[Refresh] Skipping OpenRouter-usage billing for {wallet_lower}; charged on start.", flush=True)
+        else:
+            # For bulk/auto refresh, charge by actual OpenRouter usage after completion.
+            with capture_openrouter_usage() as usage_totals:
+                run_analysis_pipeline(wallet, user_id=user_id, progress_callback=analysis_progress)
+
+            actual_cost = round(float(usage_totals.get("cost_usd", 0.0) or 0.0), 6)
+            llm_calls = int(usage_totals.get("calls", 0) or 0)
+            prompt_tokens = int(usage_totals.get("prompt_tokens", 0) or 0)
+            completion_tokens = int(usage_totals.get("completion_tokens", 0) or 0)
+            total_tokens = int(usage_totals.get("total_tokens", 0) or 0)
+            request_ids = usage_totals.get("request_ids", [])
+
+            if actual_cost > 0:
+                balance_data = load_user_balance(user_id)
+                current_balance = float(balance_data.get("balance", 0.0) or 0.0)
+                balance_data["balance"] = round(current_balance - actual_cost, 6)
+                balance_data.setdefault("transactions", []).append({
+                    "type": "analysis",
+                    "amount": actual_cost,
+                    "wallet": wallet_lower,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "charged_at": "complete",
+                    "billing_source": "openrouter_usage",
+                    "llm_calls": llm_calls,
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                    "request_ids": request_ids,
+                })
+                save_user_balance(user_id, balance_data)
+                print(
+                    f"[Refresh] Deducted actual OpenRouter cost ${actual_cost:.6f} for {wallet_lower}. "
+                    f"Balance: ${balance_data['balance']}",
+                    flush=True,
+                )
+            else:
+                print(f"[Refresh] No OpenRouter cost reported for {wallet_lower}. Nothing deducted.", flush=True)
 
         print(f"[Refresh] Step 2 done: Analysis complete for {wallet_lower}", flush=True)
         user_refresh_tasks = load_refresh_status(user_id)
-        user_refresh_tasks[wallet_lower] = {"status": "done", "detail": "Refresh complete!"}
+        user_refresh_tasks[wallet_lower] = {
+            "status": "done",
+            "detail": "Refresh complete!",
+            "actual_cost_usd": actual_cost,
+            "llm_calls": llm_calls,
+        }
         save_refresh_status(user_id, user_refresh_tasks)
         refresh_tasks[wallet_lower] = user_refresh_tasks[wallet_lower]
 

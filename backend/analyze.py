@@ -2,8 +2,10 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 from collections import OrderedDict
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -349,6 +351,42 @@ def make_chunks(day_groups: OrderedDict, max_txs: int = CHUNK_MAX_TRANSACTIONS) 
 
 
 # ── LLM ────────────────────────────────────────────────────────────────────
+_openrouter_usage_local = threading.local()
+
+
+def _safe_float(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _safe_int(value) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+@contextmanager
+def capture_openrouter_usage():
+    """Capture OpenRouter usage for the current thread."""
+    previous_tracker = getattr(_openrouter_usage_local, "tracker", None)
+    tracker = {
+        "calls": 0,
+        "cost_usd": 0.0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "request_ids": [],
+    }
+    _openrouter_usage_local.tracker = tracker
+    try:
+        yield tracker
+    finally:
+        _openrouter_usage_local.tracker = previous_tracker
+
+
 def call_llm(system_prompt: str, user_prompt: str, model: str = None, max_tokens: int = 4096, plugins: list = None) -> str:
     payload = {
         "model": model or MODEL,
@@ -383,6 +421,17 @@ def call_llm(system_prompt: str, user_prompt: str, model: str = None, max_tokens
             continue
         response.raise_for_status()
         data = response.json()
+        usage = data.get("usage") or {}
+        tracker = getattr(_openrouter_usage_local, "tracker", None)
+        if tracker is not None:
+            tracker["calls"] += 1
+            tracker["cost_usd"] += _safe_float(usage.get("cost"))
+            tracker["prompt_tokens"] += _safe_int(usage.get("prompt_tokens"))
+            tracker["completion_tokens"] += _safe_int(usage.get("completion_tokens"))
+            tracker["total_tokens"] += _safe_int(usage.get("total_tokens"))
+            request_id = data.get("id")
+            if request_id:
+                tracker["request_ids"].append(str(request_id))
         return data["choices"][0]["message"]["content"]
 
 
